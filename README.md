@@ -14,8 +14,10 @@ Fastmail. It does not implement a generic WebDAV file-storage client.
 
 ## Status
 
-Early scaffolding. There is no runtime implementation yet — see the
-[roadmap](#roadmap) below.
+Early scaffolding. The only implemented invocation is `version --json`,
+which prints package and dependency metadata; `version` alone and all
+contact operations (sync, search, show, snapshot, audit) remain
+unavailable — see the [roadmap](#roadmap) below.
 
 ## Repository ownership boundary
 
@@ -117,8 +119,9 @@ uv run mypy .
 
 ## Roadmap
 
-1. **Read-only skill (v0.1):** discovery, sync, local index, `status`,
-   `search`, `show`, `snapshot`, `audit`.
+1. **Read-only skill (v0.1):** `version --json` metadata command (implemented);
+   discovery, sync, local index, `status`, `search`, `show`, `snapshot`,
+   `audit` (not yet implemented).
 2. **Approval-gated writes (v0.2):** plan/apply create and update, with
    pre-sync, conflict detection, and independent read-back verification.
 3. **Cleanup-only deletion ABI (v0.3):** a narrow, disabled-by-default

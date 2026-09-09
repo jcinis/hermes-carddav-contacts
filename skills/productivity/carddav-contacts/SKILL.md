@@ -1,6 +1,6 @@
 ---
 name: carddav-contacts
-description: Sync, index, and search a CardDAV address book locally.
+description: Reports CardDAV skill version; contact ops unavailable.
 version: 0.1.0
 author: V (jcinis), Hermes Agent
 license: MIT
@@ -24,16 +24,23 @@ for the full ownership boundary.
 
 ## Status
 
-Scaffold only. There is no working CardDAV, `vdirsyncer`, `vobject`, or
-SQLite behavior here, and no command is invokable. The file at
-`scripts/carddav_contacts.py` is a stub whose `main()` unconditionally
-raises `NotImplementedError`; it is not a functioning entry point. **Do
-not invoke it and do not wire this skill into any workflow.**
+Version/compatibility inspection only. Running
+`scripts/carddav_contacts.py version --json` prints a single JSON object
+describing the command schema version, package version, supported source
+schema versions, capabilities, and pinned dependency versions — with no
+filesystem, network, or subprocess access. `version` alone (without
+`--json`), no arguments, and every other command (`sync`, `search`,
+`show`, `snapshot`, `audit`, ...) exit non-zero; none is implemented.
+There is still no working CardDAV, `vdirsyncer`, `vobject`, or SQLite
+behavior here. **Do not wire this skill into any workflow beyond checking
+`version --json`.**
 
 ## When to Use
 
-- Not yet: this skill has no implemented capability. Do not select or
-  invoke it for any task today.
+- Not yet: this skill has no contact-access capability. Do not select or
+  invoke it for any contact-related task today.
+- Today: only to check the `version --json` compatibility/version metadata
+  contract.
 - Future intent only, once a versioned release implements the read-only
   command surface: local, network-free lookup of a contact stored in a
   standards-compliant CardDAV address book.
@@ -54,7 +61,7 @@ dependency stance, not something to set up today:
 
 ## Pitfalls
 
-- There is no sync, index, search, or any other runtime behavior. Every
+- There is no sync, index, search, show, snapshot, or audit behavior. Every
   document under `references/` is a placeholder, not a specification of
   working behavior.
 - Do not add projection/rendering or duplicate-decision logic here; see the
@@ -62,12 +69,13 @@ dependency stance, not something to set up today:
 
 ## Verification
 
-Verification at this stage confirms only that the scaffold is well-formed
-— it does not confirm any capability works, because none is implemented:
+Verification at this stage confirms the `version --json` contract and
+that no other invocation exists yet:
 
 - This file's YAML frontmatter parses and satisfies the skill-authoring
   contract (`name`/`description`/`version`/`author`/`license`/`platforms`/
   `metadata`).
-- `uv run pytest`, `uv run ruff check .`, and `uv run mypy .` pass against
-  the placeholder test suite and stub script.
-- No functional command exists to verify, and none should be attempted.
+- `uv run pytest`, `uv run ruff check .`, and `uv run mypy .` pass.
+- `scripts/carddav_contacts.py version --json` prints one JSON object and
+  exits 0 with no stderr; `version` alone, no arguments, and every other
+  command exit non-zero with no traceback.
