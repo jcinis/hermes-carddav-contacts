@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import ipaddress
 import json
 import os
 import re
@@ -42,6 +43,12 @@ SYNC_CADENCE_SECONDS = 3600
 MANAGED_DIR_MODE = 0o700
 MANAGED_FILE_MODE = 0o600
 IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_URL_STRUCTURE_PATTERN = re.compile(r"\A(?P<scheme>[^:/?#]*)://(?P<authority>[^/?#]*)[^?#]*\Z")
+_CONTROL_OR_WHITESPACE_PATTERN = re.compile(r"[\x00-\x20\x7f]")
+_PORT_PATTERN = re.compile(r"[0-9]+")
+_MAX_PORT = 65535
+_MAX_PORT_DIGITS = len(str(_MAX_PORT))
+_SUPPORTED_URL_SCHEMES = ("http", "https")
 
 
 def _version() -> dict[str, object]:
@@ -86,11 +93,57 @@ def _parse_setup_args(args: list[str]) -> argparse.Namespace:
     return parser.parse_args(args)
 
 
+def _validate_port(remainder: str) -> None:
+    if remainder == "":
+        return
+    if not _PORT_PATTERN.fullmatch(remainder[1:]) or not remainder.startswith(":"):
+        raise _InvalidSetup("invalid server URL: malformed port")
+    digits = remainder[1:].lstrip("0") or "0"
+    if len(digits) > _MAX_PORT_DIGITS or int(digits) > _MAX_PORT:
+        raise _InvalidSetup("invalid server URL: port out of range")
+
+
+def _validate_authority(authority: str) -> None:
+    if "@" in authority:
+        raise _InvalidSetup("invalid server URL: userinfo not allowed")
+    if authority.startswith("["):
+        end = authority.find("]")
+        if end == -1:
+            raise _InvalidSetup("invalid server URL: malformed IPv6 host")
+        host, remainder = authority[1:end], authority[end + 1 :]
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError as exc:
+            raise _InvalidSetup("invalid server URL: malformed IPv6 host") from exc
+        _validate_port(remainder)
+        return
+    host, sep, port = authority.partition(":")
+    if not host:
+        raise _InvalidSetup("invalid server URL: missing host")
+    _validate_port(sep + port)
+
+
+def _validate_server_url(url: str) -> None:
+    if _CONTROL_OR_WHITESPACE_PATTERN.search(url):
+        raise _InvalidSetup("invalid server URL: control or whitespace character")
+    if "?" in url or "#" in url:
+        raise _InvalidSetup("invalid server URL: query or fragment delimiter")
+    match = _URL_STRUCTURE_PATTERN.fullmatch(url)
+    if match is None or match.group("scheme") not in _SUPPORTED_URL_SCHEMES:
+        raise _InvalidSetup("invalid server URL: missing or unsupported scheme")
+    _validate_authority(match.group("authority"))
+
+
+def _normalize_server_url(url: str) -> str:
+    return url.rstrip("/") + "/"
+
+
 def _validate_setup_args(args: argparse.Namespace) -> None:
     if not IDENTIFIER_PATTERN.fullmatch(args.profile):
         raise _InvalidSetup("invalid profile identifier")
     if not IDENTIFIER_PATTERN.fullmatch(args.namespace):
         raise _InvalidSetup("invalid namespace identifier")
+    _validate_server_url(args.server_url)
     for collection in args.collection:
         if not IDENTIFIER_PATTERN.fullmatch(collection):
             raise _InvalidSetup("invalid collection identifier")
@@ -99,11 +152,10 @@ def _validate_setup_args(args: argparse.Namespace) -> None:
 
 
 def _build_profile(namespace: str, server_url: str, collections: list[str]) -> dict[str, object]:
-    normalized_server_url = server_url if server_url.endswith("/") else server_url + "/"
     return {
         "profile_schema_version": PROFILE_SCHEMA_VERSION,
         "account_namespace": namespace,
-        "server_url": normalized_server_url,
+        "server_url": _normalize_server_url(server_url),
         "collection_allowlist": sorted(collections),
         "sync_cadence_seconds": SYNC_CADENCE_SECONDS,
         "capabilities": dict(CAPABILITIES),
@@ -131,11 +183,24 @@ def _write_profile_json(path: Path, profile: dict[str, object]) -> None:
         os.close(dir_fd)
 
 
-def _setup(args: argparse.Namespace) -> int:
-    hermes_home = Path(os.environ["HERMES_HOME"])
+def _resolve_hermes_home() -> Path:
+    if "HERMES_HOME" in os.environ:
+        candidate = Path(os.environ["HERMES_HOME"])
+        if not candidate.is_absolute():
+            raise _InvalidSetup("invalid HERMES_HOME: must be an absolute path")
+        return candidate
+    home = os.environ.get("HOME")
+    if home is None or not Path(home).is_absolute():
+        raise _InvalidSetup("invalid HOME: must be an absolute path")
+    return Path(home) / ".hermes"
+
+
+def _setup(args: argparse.Namespace, hermes_home: Path) -> int:
     root = hermes_home / "carddav-contacts"
     profiles_dir = root / "profiles"
     profile_dir = profiles_dir / args.profile
+
+    hermes_home.mkdir(mode=MANAGED_DIR_MODE, exist_ok=True)
 
     for directory in (root, profiles_dir, profile_dir):
         directory.mkdir(mode=MANAGED_DIR_MODE, exist_ok=True)
@@ -165,10 +230,11 @@ def main(argv: list[str] | None = None) -> int:
         try:
             parsed = _parse_setup_args(args[1:])
             _validate_setup_args(parsed)
+            hermes_home = _resolve_hermes_home()
         except _InvalidSetup:
             print("error: invalid setup", file=sys.stderr)
             return 2
-        return _setup(parsed)
+        return _setup(parsed, hermes_home)
     return 1
 
 

@@ -39,12 +39,13 @@ EXPECTED: dict[str, object] = {
 }
 
 
-def _run(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    env = {"PATH": ""}
+def _run(
+    args: list[str], cwd: Path, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(ENTRYPOINT), *args],
         cwd=cwd,
-        env=env,
+        env=env if env is not None else {"PATH": ""},
         capture_output=True,
         text=True,
         timeout=10,
@@ -91,6 +92,26 @@ def test_version_command_contract_and_all_else_unavailable(tmp_path: Path) -> No
         other = _run(other_args, tmp_path)
         assert other.returncode != 0
         assert "Traceback" not in other.stderr
+
+    after = sorted(tmp_path.rglob("*"))
+    assert after == before
+
+
+def test_version_ignores_invalid_hermes_home(tmp_path: Path) -> None:
+    before = sorted(tmp_path.rglob("*"))
+
+    result = _run(
+        ["version", "--json"],
+        tmp_path,
+        env={"HERMES_HOME": "relative/not-absolute", "PATH": ""},
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    payload: dict[str, object] = json.loads(result.stdout)
+    assert payload == EXPECTED
+    assert set(payload.keys()) == set(EXPECTED.keys())
 
     after = sorted(tmp_path.rglob("*"))
     assert after == before

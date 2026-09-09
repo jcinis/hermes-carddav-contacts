@@ -16,10 +16,10 @@ Fastmail. It does not implement a generic WebDAV file-storage client.
 
 Early scaffolding. `version --json` is supported and prints package and
 dependency metadata. `setup` code exists but is under development and is
-not yet a supported operation — input validation and idempotence/conflict
-handling are not implemented yet. `version` alone and all contact
-operations (sync, search, show, snapshot, audit) remain unavailable — see
-the [roadmap](#roadmap) below.
+not yet a supported operation — pre-existing path checks and
+idempotence/conflict handling are not implemented yet. `version` alone and
+all contact operations (sync, search, show, snapshot, audit) remain
+unavailable — see the [roadmap](#roadmap) below.
 
 ## Repository ownership boundary
 

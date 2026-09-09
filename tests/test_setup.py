@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -47,11 +48,14 @@ def _make_runner_code(argv: list[str]) -> str:
     )
 
 
-def _run(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _run(
+    argv: list[str], env: dict[str, str], cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     code = _make_runner_code(argv)
     return subprocess.run(
         [sys.executable, "-c", code],
         env=env,
+        cwd=cwd,
         capture_output=True,
         text=True,
         timeout=10,
@@ -261,6 +265,217 @@ def test_setup_rejects_duplicate_collection_values(
 ) -> None:
     argv = _valid_setup_argv(collections=collections)
     _assert_invalid_setup(argv, tmp_path)
+
+
+_BAD_SERVER_URLS = [
+    pytest.param("HTTPS://example.test/dav", id="uppercase_scheme"),
+    pytest.param("Https://example.test/dav", id="mixed_case_scheme"),
+    pytest.param("ftp://example.test/dav", id="unsupported_scheme"),
+    pytest.param("example.test/dav", id="missing_scheme"),
+    pytest.param("https:example.test/dav", id="scheme_without_authority_slashes"),
+    pytest.param("/dav", id="relative_path_only"),
+    pytest.param("https:///dav", id="missing_host"),
+    pytest.param("https://user@example.test/dav", id="userinfo"),
+    pytest.param("https://user:pass@example.test/dav", id="userinfo_with_password"),
+    pytest.param("https://example.test/dav?", id="empty_query_delimiter"),
+    pytest.param("https://example.test/dav?x=1", id="query"),
+    pytest.param("https://example.test/dav#", id="empty_fragment_delimiter"),
+    pytest.param("https://example.test/dav#frag", id="fragment"),
+    pytest.param("https://example.test:abc/dav", id="non_numeric_port"),
+    pytest.param("https://example.test:/dav", id="empty_port"),
+    pytest.param("https://example.test:80x/dav", id="trailing_garbage_port"),
+    pytest.param("https://example.test:80:90/dav", id="repeated_colon_port"),
+    pytest.param("https://[::1/dav", id="ipv6_missing_close_bracket"),
+    pytest.param("https://[gg::1]/dav", id="ipv6_invalid_hex"),
+    pytest.param("https://[]/dav", id="ipv6_empty"),
+    pytest.param("https://example.test/da\tv", id="control_tab"),
+    pytest.param("https://example.test/da v", id="whitespace_space"),
+    pytest.param("https://example.test/dav\n", id="trailing_newline"),
+]
+
+
+@pytest.mark.parametrize("bad_url", _BAD_SERVER_URLS)
+def test_setup_rejects_malformed_server_url(bad_url: str, tmp_path: Path) -> None:
+    argv = _valid_setup_argv(**{"server-url": bad_url})
+    _assert_invalid_setup(argv, tmp_path)
+
+
+def test_setup_rejects_out_of_range_numeric_port(tmp_path: Path) -> None:
+    argv = _valid_setup_argv(**{"server-url": "https://example.test:65536/dav"})
+    _assert_invalid_setup(argv, tmp_path)
+
+
+def test_setup_rejects_oversized_numeric_port(tmp_path: Path) -> None:
+    """A port far longer than any integer conversion limit must still exit 2 cleanly."""
+    oversized_port = "9" * 5000
+    argv = _valid_setup_argv(**{"server-url": f"https://example.test:{oversized_port}/dav"})
+    _assert_invalid_setup(argv, tmp_path)
+
+
+_VALID_SERVER_URLS = [
+    pytest.param(
+        "https://example.test/dav", "https://example.test/dav/", id="adds_missing_trailing_slash"
+    ),
+    pytest.param(
+        "https://example.test/dav/",
+        "https://example.test/dav/",
+        id="preserves_single_trailing_slash",
+    ),
+    pytest.param(
+        "https://example.test/dav///",
+        "https://example.test/dav/",
+        id="collapses_trailing_slash_run",
+    ),
+    pytest.param("https://example.test", "https://example.test/", id="bare_host_no_path"),
+    pytest.param("http://example.test/dav", "http://example.test/dav/", id="http_scheme"),
+    pytest.param(
+        "https://example.test:8443/dav",
+        "https://example.test:8443/dav/",
+        id="host_with_port",
+    ),
+    pytest.param(
+        "https://[2001:db8::1]/dav",
+        "https://[2001:db8::1]/dav/",
+        id="bracketed_ipv6",
+    ),
+    pytest.param(
+        "https://[2001:db8::1]:8443/dav",
+        "https://[2001:db8::1]:8443/dav/",
+        id="bracketed_ipv6_with_port",
+    ),
+    pytest.param(
+        "https://example.test/dav%20x",
+        "https://example.test/dav%20x/",
+        id="percent_encoded_bytes_preserved",
+    ),
+]
+
+
+@pytest.mark.parametrize("input_url,expected_url", _VALID_SERVER_URLS)
+def test_setup_normalizes_server_url_trailing_slash_only(
+    input_url: str, expected_url: str, tmp_path: Path
+) -> None:
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    env = {"HERMES_HOME": str(hermes_home), "PATH": ""}
+
+    argv = _valid_setup_argv(profile="tracer2b2", **{"server-url": input_url})
+    result = _run(argv, env)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+    profile_path = (
+        hermes_home / "carddav-contacts" / "profiles" / "tracer2b2" / "profile.json"
+    )
+    payload = json.loads(profile_path.read_bytes().decode("utf-8"))
+    assert payload["server_url"] == expected_url
+
+
+def test_setup_falls_back_to_home_hermes_when_hermes_home_unset(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {"HOME": str(home), "PATH": ""}
+
+    result = _run(_valid_setup_argv(profile="fallback-profile"), env)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+    profile_path = (
+        home / ".hermes" / "carddav-contacts" / "profiles" / "fallback-profile" / "profile.json"
+    )
+    assert profile_path.is_file()
+
+
+def test_setup_creates_absent_hermes_home_with_private_mode(tmp_path: Path) -> None:
+    """A HERMES_HOME that setup itself creates must not be world- or group-readable."""
+    hermes_home = tmp_path / "absent-hermes-home"
+    env = {"HERMES_HOME": str(hermes_home), "PATH": ""}
+
+    previous_umask = os.umask(0o000)
+    try:
+        result = _run(_valid_setup_argv(profile="tracer2b2-home"), env)
+    finally:
+        os.umask(previous_umask)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert stat.S_IMODE(hermes_home.stat().st_mode) == 0o700
+
+
+def test_setup_rejects_empty_hermes_home(tmp_path: Path) -> None:
+    env = {"HERMES_HOME": "", "PATH": ""}
+    before = sorted(tmp_path.rglob("*"))
+
+    result = _run(_valid_setup_argv(), env, cwd=tmp_path)
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "error: invalid setup\n"
+    assert sorted(tmp_path.rglob("*")) == before
+
+
+def test_setup_rejects_relative_hermes_home(tmp_path: Path) -> None:
+    env = {"HERMES_HOME": "relative/home", "PATH": ""}
+    before = sorted(tmp_path.rglob("*"))
+
+    result = _run(_valid_setup_argv(), env, cwd=tmp_path)
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "error: invalid setup\n"
+    assert sorted(tmp_path.rglob("*")) == before
+
+
+def test_setup_rejects_when_home_and_hermes_home_both_unset(tmp_path: Path) -> None:
+    env = {"PATH": ""}
+    before = sorted(tmp_path.rglob("*"))
+
+    result = _run(_valid_setup_argv(), env, cwd=tmp_path)
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "error: invalid setup\n"
+    assert sorted(tmp_path.rglob("*")) == before
+
+
+def test_setup_profiles_are_isolated(tmp_path: Path) -> None:
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    env = {"HERMES_HOME": str(hermes_home), "PATH": ""}
+
+    result_a = _run(
+        _valid_setup_argv(profile="profile-a", **{"server-url": "https://a.example.test/dav"}),
+        env,
+    )
+    assert result_a.returncode == 0
+
+    profiles_dir = hermes_home / "carddav-contacts" / "profiles"
+    profile_a_dir = profiles_dir / "profile-a"
+    before_a_listing = sorted(profile_a_dir.rglob("*"))
+    before_a_bytes = (profile_a_dir / "profile.json").read_bytes()
+
+    result_b = _run(
+        _valid_setup_argv(profile="profile-b", **{"server-url": "https://b.example.test/dav"}),
+        env,
+    )
+    assert result_b.returncode == 0
+
+    profile_b_dir = profiles_dir / "profile-b"
+    assert profile_b_dir.is_dir()
+
+    assert sorted(profile_a_dir.rglob("*")) == before_a_listing
+    after_a_bytes = (profile_a_dir / "profile.json").read_bytes()
+    assert after_a_bytes == before_a_bytes
+
+    payload_a = json.loads(after_a_bytes)
+    payload_b = json.loads((profile_b_dir / "profile.json").read_bytes())
+    assert payload_a["server_url"] == "https://a.example.test/dav/"
+    assert payload_b["server_url"] == "https://b.example.test/dav/"
 
 
 def _load_carddav_contacts_module() -> ModuleType:

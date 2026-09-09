@@ -27,15 +27,17 @@ for the full ownership boundary.
 `version --json` is supported: it prints a single JSON object describing
 the command schema version, package version, supported source schema
 versions, capabilities, and pinned dependency versions — with no
-filesystem, network, or subprocess access. `setup` code exists and writes
-a profile file, but it is under development and is **not yet a supported
-operation**: input validation and idempotence/conflict handling are not
-implemented, so its behavior is not guaranteed until those land. `version`
-alone (without `--json`) and no arguments exit non-zero. Every other
-command (`sync`, `search`, `show`, `snapshot`, `audit`, ...) also exits
-non-zero; none is implemented. There is still no working CardDAV,
-`vdirsyncer`, `vobject`, or SQLite behavior here. **Do not wire this skill
-into any workflow beyond checking `version --json`.**
+filesystem, network, or subprocess access. `setup` code exists and
+writes a profile file, but it is under development and is **not yet a
+supported operation**: identifier, server-URL, and `HERMES_HOME` input
+validation now exist, but pre-existing-path handling,
+idempotence/conflict handling, and concurrency are not implemented yet
+(tracer 2c), so its behavior is not guaranteed until those land.
+`version` alone (without `--json`) and no arguments exit non-zero. Every
+other command (`sync`, `search`, `show`, `snapshot`, `audit`, ...) also
+exits non-zero; none is implemented. There is still no working CardDAV,
+`vdirsyncer`, `vobject`, or SQLite behavior here. **Do not wire this
+skill into any workflow beyond checking `version --json`.**
 
 ## When to Use
 
