@@ -18,9 +18,11 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
+from typing import NoReturn
 
 COMMAND_SCHEMA_VERSION = "carddav-command/1.0"
 PACKAGE_VERSION = "0.1.0"
@@ -39,6 +41,7 @@ PROFILE_SCHEMA_VERSION = "carddav-profile/1.0"
 SYNC_CADENCE_SECONDS = 3600
 MANAGED_DIR_MODE = 0o700
 MANAGED_FILE_MODE = 0o600
+IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 def _version() -> dict[str, object]:
@@ -52,13 +55,47 @@ def _version() -> dict[str, object]:
     }
 
 
+class _InvalidSetup(Exception):
+    """Raised for any invalid `setup` invocation; maps to a fixed exit-2 result."""
+
+
+class _SetupArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise _InvalidSetup(message)
+
+
+_SINGLETON_OPTIONS = ("--profile", "--namespace", "--server-url")
+
+
+def _reject_repeated_singleton_options(args: list[str]) -> None:
+    for option in _SINGLETON_OPTIONS:
+        occurrences = sum(1 for arg in args if arg == option or arg.startswith(option + "="))
+        if occurrences > 1:
+            raise _InvalidSetup(f"repeated option: {option}")
+
+
 def _parse_setup_args(args: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="carddav_contacts.py setup")
+    _reject_repeated_singleton_options(args)
+    parser = _SetupArgumentParser(
+        prog="carddav_contacts.py setup", add_help=False, allow_abbrev=False
+    )
     parser.add_argument("--profile", required=True)
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--server-url", required=True)
     parser.add_argument("--collection", action="append", required=True)
     return parser.parse_args(args)
+
+
+def _validate_setup_args(args: argparse.Namespace) -> None:
+    if not IDENTIFIER_PATTERN.fullmatch(args.profile):
+        raise _InvalidSetup("invalid profile identifier")
+    if not IDENTIFIER_PATTERN.fullmatch(args.namespace):
+        raise _InvalidSetup("invalid namespace identifier")
+    for collection in args.collection:
+        if not IDENTIFIER_PATTERN.fullmatch(collection):
+            raise _InvalidSetup("invalid collection identifier")
+    if len(set(args.collection)) != len(args.collection):
+        raise _InvalidSetup("duplicate collection")
 
 
 def _build_profile(namespace: str, server_url: str, collections: list[str]) -> dict[str, object]:
@@ -125,7 +162,12 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(_version()))
         return 0
     if args[:1] == ["setup"]:
-        parsed = _parse_setup_args(args[1:])
+        try:
+            parsed = _parse_setup_args(args[1:])
+            _validate_setup_args(parsed)
+        except _InvalidSetup:
+            print("error: invalid setup", file=sys.stderr)
+            return 2
         return _setup(parsed)
     return 1
 
