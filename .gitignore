@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+
+# Environment / credentials — never committed
+.env
+.env.*
+*.credentials
+*.credentials.json
+*_credentials.json
+secrets/
+secrets.*
+
+# Contact / CardDAV runtime data — never committed
+*.vcf
+*.ics
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+mirror/
+profiles/
+*-mirror/
+*.snapshot.json
+*.audit.json
+vdirsyncer.conf
+vdirsyncer-*.conf
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
