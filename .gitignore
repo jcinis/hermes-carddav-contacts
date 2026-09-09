@@ -35,6 +35,23 @@ profiles/
 vdirsyncer.conf
 vdirsyncer-*.conf
 
+# Local runtime logs, locks, plans, receipts, and state at the repository
+# root — never committed. Real runtime state lives outside this repo under
+# $HERMES_HOME; these guard only against accidentally committing local
+# dev/test artifacts dropped at the repo root, and are intentionally
+# root-anchored so they never hide nested source, reference, test, or skill
+# directories legitimately named `plans/`, `state/`, etc. (uv.lock is a
+# manifest lockfile, not a runtime lock, and stays tracked.)
+/*.log
+/*.runtime.lock
+/runtime_log
+/runtime_lock
+/logs/
+/locks/
+/plans/
+/receipts/
+/state/
+
 # Editors / OS
 .DS_Store
 .idea/
