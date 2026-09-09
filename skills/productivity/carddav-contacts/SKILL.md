@@ -1,10 +1,10 @@
 ---
 name: carddav-contacts
-description: Reports CardDAV skill version; contact ops unavailable.
+description: Version supported; setup in progress; contacts unavailable.
 version: 0.1.0
 author: V (jcinis), Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [carddav, contacts, vdirsyncer, vobject, sync]
@@ -24,16 +24,18 @@ for the full ownership boundary.
 
 ## Status
 
-Version/compatibility inspection only. Running
-`scripts/carddav_contacts.py version --json` prints a single JSON object
-describing the command schema version, package version, supported source
-schema versions, capabilities, and pinned dependency versions — with no
-filesystem, network, or subprocess access. `version` alone (without
-`--json`), no arguments, and every other command (`sync`, `search`,
-`show`, `snapshot`, `audit`, ...) exit non-zero; none is implemented.
-There is still no working CardDAV, `vdirsyncer`, `vobject`, or SQLite
-behavior here. **Do not wire this skill into any workflow beyond checking
-`version --json`.**
+`version --json` is supported: it prints a single JSON object describing
+the command schema version, package version, supported source schema
+versions, capabilities, and pinned dependency versions — with no
+filesystem, network, or subprocess access. `setup` code exists and writes
+a profile file, but it is under development and is **not yet a supported
+operation**: input validation and idempotence/conflict handling are not
+implemented, so its behavior is not guaranteed until those land. `version`
+alone (without `--json`) and no arguments exit non-zero. Every other
+command (`sync`, `search`, `show`, `snapshot`, `audit`, ...) also exits
+non-zero; none is implemented. There is still no working CardDAV,
+`vdirsyncer`, `vobject`, or SQLite behavior here. **Do not wire this skill
+into any workflow beyond checking `version --json`.**
 
 ## When to Use
 
@@ -70,7 +72,7 @@ dependency stance, not something to set up today:
 ## Verification
 
 Verification at this stage confirms the `version --json` contract and
-that no other invocation exists yet:
+that no unsupported invocation exits zero:
 
 - This file's YAML frontmatter parses and satisfies the skill-authoring
   contract (`name`/`description`/`version`/`author`/`license`/`platforms`/
@@ -78,4 +80,6 @@ that no other invocation exists yet:
 - `uv run pytest`, `uv run ruff check .`, and `uv run mypy .` pass.
 - `scripts/carddav_contacts.py version --json` prints one JSON object and
   exits 0 with no stderr; `version` alone, no arguments, and every other
-  command exit non-zero with no traceback.
+  unimplemented command exit non-zero with no traceback. `setup` exists
+  but is not covered by this contract (see Status) and must not be relied
+  on.
