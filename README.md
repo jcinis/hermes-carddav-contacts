@@ -14,12 +14,34 @@ Fastmail. It does not implement a generic WebDAV file-storage client.
 
 ## Status
 
-Early scaffolding. `version --json` is supported and prints package and
-dependency metadata. `setup` code exists but is under development and is
-not yet a supported operation — pre-existing path checks and
-idempotence/conflict handling are not implemented yet. `version` alone and
-all contact operations (sync, search, show, snapshot, audit) remain
-unavailable — see the [roadmap](#roadmap) below.
+Early implementation. `version --json` prints package and dependency metadata.
+`setup` creates an immutable local profile, validates private paths, and
+serializes cooperating setup processes. Repeating the same settings is a
+no-op; changed settings or unsafe existing state are refused. It makes no
+network calls and does not read credentials.
+
+`discover --profile NAME` and `sync --profile NAME` use read-only vdirsyncer
+transport to maintain a private working mirror. They require explicit runtime
+credentials and never write to the remote address book. A successful `sync`
+parses the mirror with `vobject`, builds a private SQLite index, and publishes
+it as an immutable generation selected by an atomic `current` pointer that also
+records the successful sync time; unchanged remote content reuses the existing
+generation and only refreshes that time.
+
+`status`, `search`, `show`, `snapshot`, and `audit` (each `--profile NAME
+--json`) answer from that generation with no network, no subprocess, and no
+credentials. They revalidate the payload and recompute its digest before
+printing, report freshness as time since the last successful sync, and fail
+closed on damaged state. `search` is a literal case-insensitive substring over
+documented text fields, and `audit` reports conservative duplicate *candidates*
+only — never a merge, a survivor, or a write. Approval-gated writes (v0.2) and
+the cleanup-only deletion ABI (v0.3) are not implemented.
+
+Pure contact-ID, source-schema, and query helpers are implemented separately
+from the CLI. They validate contact payloads, produce deterministic source
+hashes, and compute search and duplicate-candidate results without any I/O.
+See
+[`data-model.md`](skills/productivity/carddav-contacts/references/data-model.md).
 
 ## Repository ownership boundary
 
@@ -69,6 +91,33 @@ and runs this skill — not to this repository.
   this repository. Configuration uses generic environment variable names and
   example values only (see `skills/productivity/carddav-contacts/references/`).
 
+## Installation
+
+Install the built wheel to get the `hermes-carddav-contacts` console command
+on `PATH`. It depends on exactly `vdirsyncer==0.21.0` and `vobject==0.9.9`;
+`Radicale`, `pytest`, `ruff`, and `mypy` are development-only and are never
+installed at runtime. `khard` is an optional manual-diagnostics extra.
+
+```sh
+uv build                      # writes dist/*.whl and dist/*.tar.gz
+uv pip install dist/hermes_carddav_contacts-0.1.0-py3-none-any.whl
+hermes-carddav-contacts version --json
+```
+
+The installed command needs no checkout, no `PYTHONPATH`, and no particular
+working directory. All runtime state (profiles, mirrors, indexes, generations)
+lives under `$HERMES_HOME/carddav-contacts/` — outside this repository and
+outside the installed package. Nothing is ever written into either tree.
+
+Running from a source checkout stays supported and runs the same code:
+
+```sh
+uv run python skills/productivity/carddav-contacts/scripts/carddav_contacts.py version --json
+```
+
+Linux and macOS only (POSIX `fcntl.flock` and `/usr/bin/printenv`). Only Linux
+is verified by this repository's test suite; macOS is unverified.
+
 ## Repository layout
 
 ```text
@@ -77,25 +126,33 @@ hermes-carddav-contacts/
   LICENSE
   pyproject.toml
   uv.lock
+  hermes_carddav_contacts/
+    __init__.py            # console-script launcher only
   skills/
     productivity/
       carddav-contacts/
         SKILL.md
         scripts/
           carddav_contacts.py
+          generations.py
+          ids.py
+          index.py
+          queries.py
+          reads.py
+          schemas.py
+          transport.py
         references/
           configuration.md
           data-model.md
           write-safety.md
   tests/
     fixtures/
-    test_config.py
-    test_sync.py
+    test_generations.py
     test_index.py
-    test_search.py
-    test_show.py
-    test_audit.py
-    test_real_tools.py
+    test_setup.py
+    test_sync.py
+    test_transport_integration.py
+    ...
 ```
 
 ## Configuration
@@ -114,16 +171,29 @@ environment management.
 
 ```sh
 uv sync
-uv run pytest
+uv run pytest                                              # unit suite
+uv run --group integration pytest -m integration -q        # disposable localhost Radicale
+uv run --group integration pytest -o addopts='' -m packaging -q  # build + fresh installed venv
 uv run ruff check .
 uv run mypy .
+uv build
 ```
+
+The `packaging` suite is opt-in because each run performs a real `uv build`
+and creates a fresh virtualenv in a temporary directory outside this checkout.
+It installs the built wheel and drives the installed console command through
+`version`, `setup`, read-only `discover`/`sync` against a disposable localhost
+Radicale recorder seeded with synthetic contacts, and every local query with
+that server already shut down. It also inspects both artifacts for inclusion
+boundaries, deployment-specific hosts, and credential-shaped literals — a
+bounded pattern scan, not a universal secret scanner.
 
 ## Roadmap
 
-1. **Read-only skill (v0.1):** `version --json` metadata command (implemented);
-   discovery, sync, local index, `status`, `search`, `show`, `snapshot`,
-   `audit` (not yet implemented).
+1. **Read-only skill (v0.1):** `version --json`, local `setup`, discovery,
+   working-mirror sync, the SQLite index with immutable generations, and the
+   local `status`, `search`, `show`, `snapshot`, and `audit` command surface —
+   implemented.
 2. **Approval-gated writes (v0.2):** plan/apply create and update, with
    pre-sync, conflict detection, and independent read-back verification.
 3. **Cleanup-only deletion ABI (v0.3):** a narrow, disabled-by-default

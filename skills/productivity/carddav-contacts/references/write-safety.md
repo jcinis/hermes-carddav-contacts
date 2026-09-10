@@ -1,11 +1,13 @@
-# Write safety (planned)
+# Write safety
 
-Status: placeholder. Not yet implemented.
+**v0.1 of this skill is read-only. No write path exists.** `capabilities` is
+fixed at `read_only=true`, `create_update=false`, `cleanup_delete=false`, and
+no command in this release can create, update, merge, or delete a contact —
+locally or on the remote address book. `discover` and `sync` use read-only DAV
+methods; a local edit to the working mirror is reverted by the next sync, never
+uploaded.
 
-This document will define the normative approval-gated write contract
-(plan/apply for create and update), including pre-sync generation checks,
-isolated staging, conflict handling, and independent read-back
-verification, plus the narrow, disabled-by-default cleanup deletion ABI
-consumed only by a separate cleanup project.
-
-v0.1 of this skill is read-only. No write path exists yet.
+This file exists so the read-only boundary is stated where a reader looks for
+write behavior. It defines no future contract: any approval-gated write
+capability or cleanup deletion ABI will be designed by its own plan, and until
+then nothing here is scheduled or promised.

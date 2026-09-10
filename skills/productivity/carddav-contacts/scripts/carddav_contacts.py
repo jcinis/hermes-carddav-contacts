@@ -1,29 +1,46 @@
 """CardDAV contacts skill entry point.
 
-`version --json` and `setup` are implemented. `version --json` reports
-command/source schema versions, this package's version, capabilities, and
-pinned runtime dependency versions as a single JSON object, with no
-filesystem, network, or subprocess access. `setup` writes a new profile
-under `$HERMES_HOME/carddav-contacts/profiles/<profile>/profile.json` from
-`--profile`, `--namespace`, `--server-url`, and one or more `--collection`
-flags, with no network or subprocess access. `version` without `--json`,
-no arguments, and every other command (sync, search, show, snapshot,
-audit, ...) are not yet implemented; see SKILL.md and references/ for the
-planned command and data-model contracts.
+`version --json` reports command/source schema versions, this package's
+version, capabilities, and pinned runtime dependency versions as a single JSON
+object, with no filesystem, network, or subprocess access. `setup` writes a new
+profile under `$HERMES_HOME/carddav-contacts/profiles/<profile>/profile.json`
+from `--profile`, `--namespace`, `--server-url`, and one or more
+`--collection` flags, with no network or subprocess access. `discover` and
+`sync` drive read-only vdirsyncer transport; `sync` additionally publishes an
+immutable indexed generation and commits the `current` pointer, which selects
+that generation and records the successful sync time.
+
+`status`, `snapshot`, `show --id ID`, `search --query TEXT`, and `audit` are
+strictly local readers of that one generation: each takes `--profile NAME`,
+requires `--json`, prints exactly one JSON object, and opens no socket, starts
+no subprocess, and reads no credential. Failures print one fixed stderr line,
+nothing on stdout, and exit 2. See SKILL.md and references/ for the exact
+command and data-model contracts.
 """
 
 from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import ipaddress
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, cast
+
+_SCRIPT_DIR = Path(__file__).parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+import generations
+import queries
+import reads
+import transport
 
 COMMAND_SCHEMA_VERSION = "carddav-command/1.0"
 PACKAGE_VERSION = "0.1.0"
@@ -43,6 +60,7 @@ SYNC_CADENCE_SECONDS = 3600
 MANAGED_DIR_MODE = 0o700
 MANAGED_FILE_MODE = 0o600
 IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+CONTACT_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 _URL_STRUCTURE_PATTERN = re.compile(r"\A(?P<scheme>[^:/?#]*)://(?P<authority>[^/?#]*)[^?#]*\Z")
 _CONTROL_OR_WHITESPACE_PATTERN = re.compile(r"[\x00-\x20\x7f]")
 _PORT_PATTERN = re.compile(r"[0-9]+")
@@ -64,6 +82,22 @@ def _version() -> dict[str, object]:
 
 class _InvalidSetup(Exception):
     """Raised for any invalid `setup` invocation; maps to a fixed exit-2 result."""
+
+
+class _ProfileConflict(Exception):
+    """An immutable profile already exists with different settings."""
+
+
+class _UnsafeProfileState(Exception):
+    """Stored state does not satisfy the private profile contract."""
+
+
+class _InvalidOperation(Exception):
+    """The read-only command grammar is invalid."""
+
+
+class _ContactNotFound(Exception):
+    """A well-formed contact ID is not present in the current generation."""
 
 
 class _SetupArgumentParser(argparse.ArgumentParser):
@@ -162,8 +196,43 @@ def _build_profile(namespace: str, server_url: str, collections: list[str]) -> d
     }
 
 
+def _profile_bytes(profile: dict[str, object]) -> bytes:
+    return json.dumps(profile, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
+def _read_profile(path: Path) -> dict[str, object]:
+    raw = path.read_bytes()
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise _UnsafeProfileState
+        namespace = data.get("account_namespace")
+        server_url = data.get("server_url")
+        collections = data.get("collection_allowlist")
+        if (
+            not isinstance(namespace, str)
+            or not isinstance(server_url, str)
+            or not isinstance(collections, list)
+            or not collections
+            or not all(isinstance(value, str) for value in collections)
+        ):
+            raise _UnsafeProfileState
+        _validate_setup_args(argparse.Namespace(
+            profile=path.parent.name, namespace=namespace,
+            server_url=server_url, collection=collections,
+        ))
+        profile = _build_profile(namespace, server_url, collections)
+        # Rebuilding also enforces closed keys, literal types, sorted lists,
+        # and canonical encoding (including refusal of duplicate JSON keys).
+        if raw != _profile_bytes(profile):
+            raise _UnsafeProfileState
+        return profile
+    except (ValueError, UnicodeError, _InvalidSetup) as exc:
+        raise _UnsafeProfileState from exc
+
+
 def _write_profile_json(path: Path, profile: dict[str, object]) -> None:
-    payload = json.dumps(profile, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    payload = _profile_bytes(profile)
     directory = path.parent
     fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=".profile.", suffix=".tmp")
     try:
@@ -186,7 +255,7 @@ def _write_profile_json(path: Path, profile: dict[str, object]) -> None:
 def _resolve_hermes_home() -> Path:
     if "HERMES_HOME" in os.environ:
         candidate = Path(os.environ["HERMES_HOME"])
-        if not candidate.is_absolute():
+        if not os.environ["HERMES_HOME"] or not candidate.is_absolute():
             raise _InvalidSetup("invalid HERMES_HOME: must be an absolute path")
         return candidate
     home = os.environ.get("HOME")
@@ -195,29 +264,256 @@ def _resolve_hermes_home() -> Path:
     return Path(home) / ".hermes"
 
 
+def _check_managed_path(path: Path, *, directory: bool = False) -> bool:
+    """Check existing state without following links or repairing permissions."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    mode = MANAGED_DIR_MODE if directory else MANAGED_FILE_MODE
+    valid_type = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    if (
+        not valid_type
+        or info.st_uid != os.getuid()
+        or stat.S_IMODE(info.st_mode) != mode
+        or (not directory and info.st_nlink != 1)
+    ):
+        raise _UnsafeProfileState
+    return True
+
+
+def _check_hermes_home(hermes_home: Path) -> None:
+    """Check the operator-owned home root: never create, follow, or repair it.
+
+    The home root belongs to the operator, so its mode is whatever they gave it;
+    only its type and owner are checked, and `lstat` keeps a symlink from being
+    followed. Everything below it is skill-owned and stays `0700`/`0600` under
+    `_check_managed_path`. Every command applies this same check, so a home that
+    `setup` accepted is never rejected by a later command.
+    """
+    try:
+        info = hermes_home.lstat()
+    except FileNotFoundError as exc:
+        raise _UnsafeProfileState from exc
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise _UnsafeProfileState
+
+
+def _prepare_hermes_home(hermes_home: Path) -> None:
+    """Create an absent home privately; `setup` is the only command that may."""
+    try:
+        hermes_home.lstat()
+    except FileNotFoundError:
+        try:
+            hermes_home.mkdir(mode=MANAGED_DIR_MODE)
+        except FileExistsError:
+            pass  # Another cooperating setup may have just created it.
+    _check_hermes_home(hermes_home)
+
+
 def _setup(args: argparse.Namespace, hermes_home: Path) -> int:
     root = hermes_home / "carddav-contacts"
     profiles_dir = root / "profiles"
     profile_dir = profiles_dir / args.profile
 
-    hermes_home.mkdir(mode=MANAGED_DIR_MODE, exist_ok=True)
+    _prepare_hermes_home(hermes_home)
 
     for directory in (root, profiles_dir, profile_dir):
-        directory.mkdir(mode=MANAGED_DIR_MODE, exist_ok=True)
-        os.chmod(directory, MANAGED_DIR_MODE)
+        if not _check_managed_path(directory, directory=True):
+            try:
+                directory.mkdir(mode=MANAGED_DIR_MODE)
+            except FileExistsError:
+                pass  # Another cooperating setup may have just created it.
+            _check_managed_path(directory, directory=True)
 
     lock_path = profile_dir / "profile.lock"
-    lock_path.touch(exist_ok=True)
-    os.chmod(lock_path, MANAGED_FILE_MODE)
+    profile_path = profile_dir / "profile.json"
+    _check_managed_path(profile_path)
+    if not _check_managed_path(lock_path):
+        try:
+            fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, MANAGED_FILE_MODE)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+        _check_managed_path(lock_path)
 
     with open(lock_path) as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             profile = _build_profile(args.namespace, args.server_url, args.collection)
-            _write_profile_json(profile_dir / "profile.json", profile)
+            if _check_managed_path(profile_path):
+                if _read_profile(profile_path) != profile:
+                    raise _ProfileConflict
+            else:
+                _write_profile_json(profile_path, profile)
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
+    return 0
+
+
+def _resolve_profile_paths(profile_name: str) -> tuple[Path, Path, Path]:
+    hermes_home = _resolve_hermes_home()
+    root = hermes_home / "carddav-contacts"
+    profiles_dir = root / "profiles"
+    profile_dir = profiles_dir / profile_name
+    profile_path = profile_dir / "profile.json"
+    lock_path = profile_dir / "profile.lock"
+
+    _check_hermes_home(hermes_home)
+    for directory in (root, profiles_dir, profile_dir):
+        if not _check_managed_path(directory, directory=True):
+            raise _UnsafeProfileState
+    for path in (profile_path, lock_path):
+        if not _check_managed_path(path):
+            raise _UnsafeProfileState
+    return profile_dir, profile_path, lock_path
+
+
+_READ_COMMANDS = ("status", "snapshot", "show", "search", "audit")
+
+
+_READ_OPTIONS = {"show": "--id", "search": "--query"}
+MAX_QUERY_CHARACTERS = 512
+
+
+def _valid_query(query: str) -> bool:
+    """Accept a bounded, printable literal search string; never a pattern language."""
+    if not 1 <= len(query) <= MAX_QUERY_CHARACTERS:
+        return False
+    return not any(
+        ord(character) < 0x20 or ord(character) == 0x7F or 0xD800 <= ord(character) <= 0xDFFF
+        for character in query
+    )
+
+
+def _parse_read_args(command: str, args: list[str]) -> tuple[str, str | None]:
+    """Accept only the exact documented flag grammar of one local read command."""
+    flag = _READ_OPTIONS.get(command)
+    expected = 3 if flag is None else 5
+    if len(args) != expected or args[0] != "--profile" or args[-1] != "--json":
+        raise _InvalidOperation
+    if not IDENTIFIER_PATTERN.fullmatch(args[1]):
+        raise _InvalidOperation
+    if flag is None:
+        return args[1], None
+    if args[2] != flag:
+        raise _InvalidOperation
+    if command == "show" and CONTACT_ID_PATTERN.fullmatch(args[3]) is None:
+        raise _InvalidOperation
+    if command == "search" and not _valid_query(args[3]):
+        raise _InvalidOperation
+    return args[1], args[3]
+
+
+def _parse_network_args(args: list[str]) -> str:
+    if len(args) != 2 or args[0] != "--profile" or not IDENTIFIER_PATTERN.fullmatch(args[1]):
+        raise _InvalidOperation
+    return args[1]
+
+
+def _network_command(command: str, profile_name: str) -> int:
+    profile_dir, profile_path, lock_path = _resolve_profile_paths(profile_name)
+    with lock_path.open() as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            profile_bytes = profile_path.read_bytes()
+            profile = _read_profile(profile_path)
+            transport.run_operation(command, profile, profile_dir)
+            if command == "sync":
+                generations.publish(profile_dir, profile, profile_bytes)
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    return 0
+
+
+_Loaded = tuple[str, str, dict[str, object]]
+
+
+def _read_under_lock(profile_name: str) -> tuple[dict[str, object], bytes, _Loaded | None]:
+    """Validate one profile and its single current generation under a shared lock."""
+    profile_dir, profile_path, lock_path = _resolve_profile_paths(profile_name)
+    with lock_path.open() as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
+        try:
+            profile_bytes = profile_path.read_bytes()
+            profile = _read_profile(profile_path)
+            loaded: _Loaded | None
+            try:
+                loaded = reads.load_source(profile_dir, profile_bytes)
+            except reads.NoCurrentGeneration:
+                loaded = None
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    return profile, profile_bytes, loaded
+
+
+def _contacts(source: dict[str, object]) -> list[dict[str, object]]:
+    contacts = source["contacts"]
+    if not isinstance(contacts, list):
+        raise generations.UnsafeGenerationState
+    return [cast(dict[str, object], contact) for contact in contacts]
+
+
+def _status(profile_name: str) -> int:
+    profile, profile_bytes, loaded = _read_under_lock(profile_name)
+    payload: dict[str, object] = {
+        "command_schema_version": COMMAND_SCHEMA_VERSION,
+        "command": "status",
+        "profile": profile_name,
+        "current_generation": None,
+        "profile_generation_sha256": hashlib.sha256(profile_bytes).hexdigest(),
+        "contact_count": None,
+        "synced_at": None,
+        "freshness": None,
+    }
+    if loaded is not None:
+        generation, synced_at, source = loaded
+        payload["current_generation"] = generation
+        payload["contact_count"] = len(_contacts(source))
+        payload["synced_at"] = synced_at
+        payload["freshness"] = reads.freshness(synced_at, profile["sync_cadence_seconds"])
+    print(json.dumps(payload))
+    return 0
+
+
+def _read_command(command: str, profile_name: str, option: str | None = None) -> int:
+    """Answer one local read from the single validated current generation."""
+    profile, profile_bytes, loaded = _read_under_lock(profile_name)
+    if loaded is None:
+        raise reads.NoCurrentGeneration
+    generation, synced_at, source = loaded
+    payload: dict[str, object] = {
+        "command_schema_version": COMMAND_SCHEMA_VERSION,
+        "command": command,
+        "profile": profile_name,
+        "generation": generation,
+        "profile_generation_sha256": hashlib.sha256(profile_bytes).hexdigest(),
+        "synced_at": synced_at,
+        "freshness": reads.freshness(synced_at, profile["sync_cadence_seconds"]),
+    }
+    if command == "snapshot":
+        payload["data"] = source
+    elif command == "show":
+        matches = [
+            contact for contact in _contacts(source) if contact["contact_id"] == option
+        ]
+        if not matches:
+            raise _ContactNotFound
+        payload["contact"] = matches[0]
+    elif command == "search":
+        results = queries.search(_contacts(source), cast(str, option))
+        payload["query"] = option
+        payload["total_matches"] = len(results)
+        payload["truncated"] = False
+        payload["results"] = results
+    elif command == "audit":
+        candidates = queries.audit(_contacts(source))
+        payload["total_candidate_groups"] = len(candidates)
+        payload["truncated"] = False
+        payload["candidates"] = candidates
+    print(json.dumps(payload))
     return 0
 
 
@@ -231,11 +527,67 @@ def main(argv: list[str] | None = None) -> int:
             parsed = _parse_setup_args(args[1:])
             _validate_setup_args(parsed)
             hermes_home = _resolve_hermes_home()
+            return _setup(parsed, hermes_home)
         except _InvalidSetup:
             print("error: invalid setup", file=sys.stderr)
             return 2
-        return _setup(parsed, hermes_home)
-    return 1
+        except _ProfileConflict:
+            print("error: profile conflict", file=sys.stderr)
+            return 2
+        except _UnsafeProfileState:
+            print("error: unsafe profile state", file=sys.stderr)
+            return 2
+        except OSError:
+            print("error: setup failed", file=sys.stderr)
+            return 2
+    if args[:1] in (["discover"], ["sync"]):
+        command = args[0]
+        try:
+            profile_name = _parse_network_args(args[1:])
+        except _InvalidOperation:
+            print("error: invalid operation", file=sys.stderr)
+            return 2
+        try:
+            return _network_command(command, profile_name)
+        except transport.InvalidCredentials:
+            print("error: invalid credentials", file=sys.stderr)
+            return 2
+        except (
+            _InvalidSetup,
+            _UnsafeProfileState,
+            transport.UnsafeRuntimeState,
+            generations.UnsafeGenerationState,
+        ):
+            print("error: unsafe profile state", file=sys.stderr)
+            return 2
+        except Exception:  # noqa: BLE001 - fixed CLI boundary redacts all failures
+            print(f"error: {command} failed", file=sys.stderr)
+            return 2
+    if args[:1] and args[0] in _READ_COMMANDS:
+        command = args[0]
+        try:
+            profile_name, option = _parse_read_args(command, args[1:])
+        except _InvalidOperation:
+            print("error: invalid operation", file=sys.stderr)
+            return 2
+        try:
+            if command == "status":
+                return _status(profile_name)
+            return _read_command(command, profile_name, option)
+        except reads.NoCurrentGeneration:
+            print("error: no current generation", file=sys.stderr)
+            return 2
+        except _ContactNotFound:
+            print("error: contact not found", file=sys.stderr)
+            return 2
+        except (_InvalidSetup, _UnsafeProfileState, generations.UnsafeGenerationState):
+            print("error: unsafe profile state", file=sys.stderr)
+            return 2
+        except Exception:  # noqa: BLE001 - fixed CLI boundary redacts all failures
+            print(f"error: {command} failed", file=sys.stderr)
+            return 2
+    print("error: invalid operation", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":
