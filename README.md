@@ -1,11 +1,15 @@
 # hermes-carddav-contacts
 
-A distributable, self-contained Hermes Agent skill for read-only access to a
-standards-compliant CardDAV address book. It wraps
+A distributable, self-contained Hermes Agent skill for a standards-compliant
+CardDAV address book: offline local queries over a synchronized mirror, plus
+basic CRUD on individual contacts. It wraps
 [`vdirsyncer`](https://vdirsyncer.pimutils.org/) for CardDAV synchronization
 and [`vobject`](https://eventable.github.io/vobject/) for vCard parsing, and
-adds a private local SQLite index, stable opaque contact IDs, and a small
-local-only command surface (`status`, `search`, `show`, `snapshot`, `audit`).
+adds a private local SQLite index, stable opaque contact IDs, a small
+local-only read surface (`status`, `search`, `show`, `snapshot`, `audit`), and
+a reviewed, revision-bound write surface (`record`, `prepare-create`,
+`prepare-update`, `prepare-delete`, `apply`, `reconcile`) that is also
+importable as `hermes_carddav_contacts.api`.
 
 It targets any CardDAV server that speaks the standard address book extension
 to WebDAV — for example Radicale, Nextcloud, Baïkal, or Fastmail. It is not a
@@ -37,15 +41,63 @@ documented text fields. `snapshot` prints the whole validated payload, so a
 downstream consumer can build on a versioned, digest-identified source.
 `version --json` prints package, schema, capability, and dependency metadata.
 
-### Read-only scope
+`record --profile NAME --id ID --json` reads one contact fresh from the server.
+`prepare-create`, `prepare-update`, and `prepare-delete` each read the target
+fresh and emit one private, reviewable operation bound to an exact contact and
+the revision it carried; `apply --operation ID` performs exactly that one write
+and verifies it by reading the record back; `reconcile --operation ID` resolves
+an operation whose outcome is unknown.
 
-This release has no write path of any kind. `capabilities` is fixed at
-`read_only=true`, `create_update=false`, `cleanup_delete=false`; there is no
-create, update, merge, or delete command; and `discover`/`sync` use read-only
-DAV methods, so a local edit to the working mirror is reverted rather than
-uploaded. `audit` reports conservative duplicate *candidates* only — never a
-merge, a survivor, or a write. See
+### Write scope
+
+`capabilities` reports `read_only=false`, `create=true`, `update=true`,
+`delete=true`. Delete is an ordinary supported operation.
+
+What that does and does not mean:
+
+- Ordinary local reads stay offline, and routine `discover`/`sync` still use a
+  `read_only=true` vdirsyncer storage — a local edit to the working mirror is
+  reverted, never uploaded.
+- A write only happens inside `apply` or `reconcile`, for exactly one already
+  prepared operation, with `If-None-Match: *` on a create and `If-Match` on an
+  update or delete. A precondition failure is final and needs a fresh review.
+- Every applied write is verified by reading the exact record back; a delete
+  requires an authoritative not-found.
+- An edit rewrites only the properties it names. Photos, unknown `X-`
+  extensions, group prefixes, multi-valued structured names, and the `UID`
+  survive untouched, and an edit that cannot be expressed without losing
+  supplied data is refused.
+- A timeout is an unknown outcome, resolved by `reconcile` reading the server —
+  never by replaying the write.
+- `audit` still reports conservative duplicate *candidates* only — never a
+  merge, a survivor, or a write. Survivor policy, batching, and approval
+  workflow belong to a consumer.
+
+See
 [`write-safety.md`](skills/productivity/carddav-contacts/references/write-safety.md).
+
+### Using it from Python
+
+A consumer should build on the shared API rather than becoming a second CardDAV
+writer:
+
+```python
+from hermes_carddav_contacts import api
+
+current = api.read_record("demo", "0123456789abcdef")
+operation = api.prepare_update("demo", current["contact_id"], {
+    "change_schema_version": api.CHANGE_SCHEMA_VERSION,
+    "set": {"display": "Example Person"},
+    "clear": ["birthday"],
+    "replace": {"emails": [{"value": "person@example.invalid", "types": ["work"],
+                            "label": None, "preference": None}]},
+})
+result = api.apply_operation("demo", operation["operation_id"])
+```
+
+These are the same objects the console command calls. `api` also exposes
+`read_collection` and `prepare_replace`, a validated lossless whole-card
+replacement for a consumer that composed the complete card itself.
 
 Nothing deployment-specific lives in this repository: no server hostnames,
 address-book names, credential values, or contact data. Documentation and tests
@@ -61,7 +113,7 @@ invoked by any command.
 
 ```sh
 uv build                      # writes dist/*.whl and dist/*.tar.gz
-uv pip install dist/hermes_carddav_contacts-0.1.0-py3-none-any.whl
+uv pip install dist/hermes_carddav_contacts-0.2.0-py3-none-any.whl
 hermes-carddav-contacts version --json
 ```
 
@@ -86,7 +138,17 @@ hermes-carddav-contacts discover --profile demo
 hermes-carddav-contacts sync --profile demo
 hermes-carddav-contacts search --profile demo --query 'example' --json
 hermes-carddav-contacts show --profile demo --id 0123456789abcdef --json
+
+# Changing a contact: read it fresh, prepare the change, review it, apply it.
+hermes-carddav-contacts record --profile demo --id 0123456789abcdef --json
+hermes-carddav-contacts prepare-update --profile demo --id 0123456789abcdef \
+    --changes '{"change_schema_version":"carddav-change/1.0","set":{"display":"Example Person"},"clear":[],"replace":{}}' --json
+hermes-carddav-contacts apply --profile demo --operation "$OPERATION_ID" --json
+hermes-carddav-contacts prepare-delete --profile demo --id 0123456789abcdef --json
 ```
+
+`$OPERATION_ID` is the `operation_id` printed by the matching `prepare-*`
+command. Writes need the same credentials as `discover`/`sync`.
 
 Credentials are read from the process environment at operation time only, never
 from CLI arguments, a URL, or persisted config, and are never logged or echoed.
@@ -103,7 +165,8 @@ Full documentation lives with the skill:
   — contact IDs, the closed `carddav-source/1.0` payload, canonical bytes and
   the generation digest, the vCard adapter, and the SQLite index schema.
 - [`references/write-safety.md`](skills/productivity/carddav-contacts/references/write-safety.md)
-  — the read-only boundary.
+  — preconditions, read-back verification, lossless preservation, unknown
+  outcomes, reconciliation, and cache invalidation.
 
 Pure contact-ID, source-schema, and query helpers are implemented separately
 from the CLI. They validate contact payloads, produce deterministic source
@@ -138,12 +201,17 @@ The `packaging` suite is opt-in because each run performs a real `uv build` and
 creates a fresh virtualenv in a temporary directory outside this checkout. It
 installs the built wheel and drives the installed console command through
 `version`, `setup`, read-only `discover`/`sync` against a disposable localhost
-Radicale recorder seeded with synthetic contacts, and every local query with
-that server already shut down. It also inspects both artifacts for inclusion
+Radicale recorder seeded with synthetic contacts, a full create/update/delete
+cycle through both the installed console command and the installed
+`hermes_carddav_contacts.api`, and every local query with that server already
+shut down. It also inspects both artifacts for inclusion
 boundaries, deployment-specific hosts, and credential-shaped literals — a
 bounded pattern scan, not a universal secret scanner.
 
 Tests never reach a real CardDAV server and use synthetic fixtures only.
+Passing against disposable localhost Radicale is not evidence about any
+particular real server: Radicale re-serializes what it stores, and other
+servers normalize differently.
 
 ### Repository layout
 
@@ -155,6 +223,7 @@ hermes-carddav-contacts/
   uv.lock
   hermes_carddav_contacts/
     __init__.py            # console-script launcher only
+    api.py                 # the supported Python CRUD API
   skills/
     productivity/
       carddav-contacts/
@@ -164,10 +233,14 @@ hermes-carddav-contacts/
           generations.py
           ids.py
           index.py
+          profiles.py
           queries.py
           reads.py
+          records.py
           schemas.py
           transport.py
+          vcards.py
+          writes.py
         references/
           configuration.md
           data-model.md

@@ -226,18 +226,18 @@ def test_source_strings_normalize_line_breaks_and_reject_controls_and_surrogates
 def test_version_and_snapshot_command_envelopes_are_exact_and_typed() -> None:
     schemas = _load_schemas()
     version = {
-        "command_schema_version": "carddav-command/1.0",
+        "command_schema_version": "carddav-command/1.1",
         "command": "version",
-        "package_version": "0.1.0",
+        "package_version": "0.2.0",
         "supported_source_schema_versions": ["carddav-source/1.0"],
-        "capabilities": {"read_only": True, "create_update": False, "cleanup_delete": False},
+        "capabilities": {"read_only": False, "create": True, "update": True, "delete": True},
         "dependency_versions": {"vdirsyncer": "0.21.0", "vobject": "0.9.9"},
     }
     schemas.validate_command(version)
 
     snapshot_data = _source()
     snapshot = {
-        "command_schema_version": "carddav-command/1.0",
+        "command_schema_version": "carddav-command/1.1",
         "command": "snapshot",
         "profile": "demo",
         "generation": schemas.source_generation(snapshot_data),
@@ -249,6 +249,7 @@ def test_version_and_snapshot_command_envelopes_are_exact_and_typed() -> None:
             "stale": False,
             "clock_skew": False,
         },
+        "cache_invalidated": False,
         "data": snapshot_data,
     }
     schemas.validate_command(snapshot)
@@ -282,7 +283,7 @@ def test_snapshot_requires_generation_digest_and_strict_freshness() -> None:
     schemas = _load_schemas()
     data = _source()
     snapshot: dict[str, object] = {
-        "command_schema_version": "carddav-command/1.0",
+        "command_schema_version": "carddav-command/1.1",
         "command": "snapshot",
         "profile": "demo",
         "generation": schemas.source_generation(data),
@@ -294,6 +295,7 @@ def test_snapshot_requires_generation_digest_and_strict_freshness() -> None:
             "stale": False,
             "clock_skew": False,
         },
+        "cache_invalidated": False,
         "data": data,
     }
     for key, bad_value in (

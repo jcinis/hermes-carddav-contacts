@@ -49,12 +49,13 @@ from tests.test_transport_integration import (
 pytestmark = pytest.mark.packaging
 
 REPO_ROOT = Path(__file__).parent.parent
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 CONSOLE_COMMAND = "hermes-carddav-contacts"
 PROFILE = "smoke"
 
 WHEEL_CONTENTS = {
     "hermes_carddav_contacts/__init__.py",
+    "hermes_carddav_contacts/api.py",
     "skills/productivity/carddav-contacts/SKILL.md",
     "skills/productivity/carddav-contacts/references/configuration.md",
     "skills/productivity/carddav-contacts/references/data-model.md",
@@ -63,10 +64,14 @@ WHEEL_CONTENTS = {
     "skills/productivity/carddav-contacts/scripts/generations.py",
     "skills/productivity/carddav-contacts/scripts/ids.py",
     "skills/productivity/carddav-contacts/scripts/index.py",
+    "skills/productivity/carddav-contacts/scripts/profiles.py",
     "skills/productivity/carddav-contacts/scripts/queries.py",
     "skills/productivity/carddav-contacts/scripts/reads.py",
+    "skills/productivity/carddav-contacts/scripts/records.py",
     "skills/productivity/carddav-contacts/scripts/schemas.py",
     "skills/productivity/carddav-contacts/scripts/transport.py",
+    "skills/productivity/carddav-contacts/scripts/vcards.py",
+    "skills/productivity/carddav-contacts/scripts/writes.py",
     f"hermes_carddav_contacts-{VERSION}.dist-info/METADATA",
     f"hermes_carddav_contacts-{VERSION}.dist-info/RECORD",
     f"hermes_carddav_contacts-{VERSION}.dist-info/WHEEL",
@@ -137,6 +142,8 @@ class _Installed:
     venv: Path
     home: Path
     requests: list[tuple[str, str]]
+    crud: dict[str, object]
+    crud_requests: list[tuple[str, str]]
 
     @property
     def command(self) -> Path:
@@ -151,6 +158,20 @@ class _Installed:
         env = {"HERMES_HOME": str(self.home), "PATH": os.defpath}
         return subprocess.run([str(self.command), *args], env=env, cwd=self.workdir,
                               capture_output=True, text=True, timeout=90, check=False)
+
+    def run_online(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """Run the installed console command with the fixture credentials present."""
+        env = {"HERMES_HOME": str(self.home), "PATH": os.defpath,
+               "CARDDAV_USERNAME": USERNAME, "CARDDAV_PASSWORD": PASSWORD}
+        return subprocess.run([str(self.command), *args], env=env, cwd=self.workdir,
+                              capture_output=True, text=True, timeout=180, check=False)
+
+    def json_online(self, *args: str) -> dict[str, object]:
+        result = self.run_online(*args)
+        assert (result.returncode, result.stderr) == (0, ""), result.stderr
+        payload = json.loads(result.stdout)
+        assert isinstance(payload, dict)
+        return payload
 
 
 def _uv(*args: str, cwd: Path = REPO_ROOT) -> None:
@@ -179,7 +200,7 @@ def installed(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Installed]:
     _uv("pip", "install", "--python", str(venv / "bin" / "python"), str(wheel))
 
     home = workdir / "hermes-home"
-    state = _Installed(workdir, wheel, sdist, venv, home, [])
+    state = _Installed(workdir, wheel, sdist, venv, home, [], {}, [])
     server_root = workdir / "server-storage"
     if server_root.exists():
         shutil.rmtree(server_root)
@@ -219,7 +240,13 @@ def installed(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Installed]:
                                         env=env, cwd=workdir, capture_output=True,
                                         text=True, timeout=120, check=False)
                 assert (result.returncode, result.stdout, result.stderr) == (0, "", ""), result
+            # Captured before any write is permitted, so the read-only claim
+            # about discover/sync is about exactly those commands.
             state.requests = list(recorder.requests)
+            recorder.requests.clear()
+            recorder.writes_allowed = True
+            state.crud = _drive_installed_crud(state)
+            state.crud_requests = list(recorder.requests)
         finally:
             server.shutdown()
             thread.join(timeout=5)
@@ -227,6 +254,79 @@ def installed(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Installed]:
     yield state
     if not override:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+_API_SCRIPT = """
+import json, sys
+from hermes_carddav_contacts import api
+
+changes = {
+    "change_schema_version": api.CHANGE_SCHEMA_VERSION,
+    "set": {"display": "Api Placeholder"},
+    "clear": [],
+    "replace": {"emails": [{"value": "api@example.invalid", "types": ["work"],
+                            "label": None, "preference": None}]},
+}
+operation = api.prepare_create(PROFILE, "contacts", changes)
+created = api.apply_operation(PROFILE, operation["operation_id"])
+fresh = api.read_record(PROFILE, operation["contact_id"])
+removal = api.prepare_delete(PROFILE, operation["contact_id"])
+deleted = api.apply_operation(PROFILE, removal["operation_id"])
+json.dump({"capabilities": api.CAPABILITIES, "created": created["outcome"],
+           "display": fresh["contact"]["name"]["display"],
+           "deleted": deleted["outcome"]}, sys.stdout)
+"""
+
+
+def _drive_installed_crud(state: _Installed) -> dict[str, object]:
+    """Exercise every CRUD verb through the installed command and the installed API."""
+    changes = json.dumps({
+        "change_schema_version": "carddav-change/1.0",
+        "set": {"display": "Created Placeholder", "given": "Created"},
+        "clear": [], "replace": {},
+    })
+    operation = state.json_online(
+        "prepare-create", "--profile", PROFILE, "--collection", "contacts",
+        "--changes", changes, "--json")
+    created = state.json_online(
+        "apply", "--profile", PROFILE, "--operation", str(operation["operation_id"]), "--json")
+    contact_id = str(operation["contact_id"])
+
+    renamed = json.dumps({
+        "change_schema_version": "carddav-change/1.0",
+        "set": {"display": "Renamed Placeholder"}, "clear": ["given"], "replace": {},
+    })
+    update = state.json_online(
+        "prepare-update", "--profile", PROFILE, "--id", contact_id,
+        "--changes", renamed, "--json")
+    updated = state.json_online(
+        "apply", "--profile", PROFILE, "--operation", str(update["operation_id"]), "--json")
+    record = state.json_online("record", "--profile", PROFILE, "--id", contact_id, "--json")
+
+    # A stale application of the same reviewed operation must fail closed.
+    stale = state.run_online(
+        "apply", "--profile", PROFILE, "--operation", str(update["operation_id"]), "--json")
+
+    removal = state.json_online(
+        "prepare-delete", "--profile", PROFILE, "--id", contact_id, "--json")
+    deleted = state.json_online(
+        "apply", "--profile", PROFILE, "--operation", str(removal["operation_id"]), "--json")
+    gone = state.run_online("record", "--profile", PROFILE, "--id", contact_id, "--json")
+
+    api_result = subprocess.run(
+        [str(state.python), "-c", f"PROFILE = {PROFILE!r}\n" + _API_SCRIPT],
+        env={"HERMES_HOME": str(state.home), "PATH": os.defpath,
+             "CARDDAV_USERNAME": USERNAME, "CARDDAV_PASSWORD": PASSWORD},
+        cwd=state.workdir, capture_output=True, text=True, timeout=240, check=False)
+    assert api_result.returncode == 0, api_result.stderr
+
+    return {
+        "created": created, "updated": updated, "record": record,
+        "repeat_apply": (stale.returncode, stale.stdout, stale.stderr),
+        "deleted": deleted,
+        "gone": (gone.returncode, gone.stdout, gone.stderr),
+        "api": json.loads(api_result.stdout),
+    }
 
 
 def _artifact_text(installed: _Installed) -> dict[str, str]:
@@ -332,11 +432,11 @@ def test_installed_console_command_reports_the_version_contract(installed: _Inst
     result = installed.run("version", "--json")
     assert (result.returncode, result.stderr) == (0, "")
     assert json.loads(result.stdout) == {
-        "command_schema_version": "carddav-command/1.0",
+        "command_schema_version": "carddav-command/1.1",
         "command": "version",
         "package_version": VERSION,
         "supported_source_schema_versions": ["carddav-source/1.0"],
-        "capabilities": {"read_only": True, "create_update": False, "cleanup_delete": False},
+        "capabilities": {"read_only": False, "create": True, "update": True, "delete": True},
         "dependency_versions": {"vdirsyncer": "0.21.0", "vobject": "0.9.9"},
     }
 
@@ -389,6 +489,54 @@ def test_installed_local_queries_answer_offline_from_the_synthetic_generation(
     audit = json.loads(installed.run("audit", "--profile", PROFILE, "--json").stdout)
     assert audit["total_candidate_groups"] == 0
     assert audit["generation"] == generation
+
+
+def test_installed_crud_runs_through_the_console_command(installed: _Installed) -> None:
+    crud = installed.crud
+    created = crud["created"]
+    assert isinstance(created, dict)
+    assert (created["outcome"], created["remote_write"]) == ("applied", True)
+    assert created["result_schema_version"] == "carddav-result/1.0"
+
+    updated = crud["updated"]
+    assert isinstance(updated, dict)
+    assert updated["outcome"] == "applied"
+
+    record = crud["record"]
+    assert isinstance(record, dict)
+    assert record["record_schema_version"] == "carddav-record/1.0"
+    contact = record["contact"]
+    assert isinstance(contact, dict)
+    name = contact["name"]
+    assert isinstance(name, dict)
+    assert name["display"] == "Renamed Placeholder"
+    assert record["revision"]
+
+    # Re-applying a settled operation reports the recorded outcome, never a second write.
+    assert crud["repeat_apply"][0] == 0  # type: ignore[index]
+
+    deleted = crud["deleted"]
+    assert isinstance(deleted, dict)
+    assert deleted["outcome"] == "applied"
+    assert crud["gone"][0] == 2  # type: ignore[index]
+    assert crud["gone"][2] == "error: contact not found\n"  # type: ignore[index]
+
+
+def test_installed_crud_used_real_conditional_write_methods(installed: _Installed) -> None:
+    methods = {method for method, _ in installed.crud_requests}
+    assert {"PUT", "DELETE"} <= methods
+    # The read-only phase recorded no mutation method at all.
+    assert all(method in ALLOWED_METHODS for method, _ in installed.requests)
+
+
+def test_installed_crud_runs_through_the_imported_public_api(installed: _Installed) -> None:
+    api = installed.crud["api"]
+    assert isinstance(api, dict)
+    assert api["capabilities"] == {
+        "read_only": False, "create": True, "update": True, "delete": True}
+    assert api["created"] == "applied"
+    assert api["display"] == "Api Placeholder"
+    assert api["deleted"] == "applied"
 
 
 def test_installed_command_keeps_all_runtime_state_outside_the_checkout(

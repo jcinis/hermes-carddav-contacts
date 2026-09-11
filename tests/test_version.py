@@ -21,18 +21,19 @@ ENTRYPOINT = (
 )
 
 EXPECTED_CAPABILITIES: dict[str, bool] = {
-    "read_only": True,
-    "create_update": False,
-    "cleanup_delete": False,
+    "read_only": False,
+    "create": True,
+    "update": True,
+    "delete": True,
 }
 EXPECTED_DEPENDENCY_VERSIONS: dict[str, str] = {
     "vdirsyncer": "0.21.0",
     "vobject": "0.9.9",
 }
 EXPECTED: dict[str, object] = {
-    "command_schema_version": "carddav-command/1.0",
+    "command_schema_version": "carddav-command/1.1",
     "command": "version",
-    "package_version": "0.1.0",
+    "package_version": "0.2.0",
     "supported_source_schema_versions": ["carddav-source/1.0"],
     "capabilities": EXPECTED_CAPABILITIES,
     "dependency_versions": EXPECTED_DEPENDENCY_VERSIONS,
@@ -84,6 +85,8 @@ def test_version_command_contract_and_all_else_unavailable(tmp_path: Path) -> No
         ["version"],
         ["version", "--bogus"],
         ["sync"],
+        ["apply"],
+        ["prepare-create"],
         ["search"],
         ["show"],
         ["snapshot"],

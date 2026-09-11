@@ -1,4 +1,4 @@
-# Configuration and read-only transport
+# Configuration, transport, and command contracts
 
 ## Local profile
 
@@ -23,11 +23,27 @@ missing home is a refusal, not a fresh home. Below it, skill-owned directories
 are `0700`; files are `0600`, owned by the current user. Existing unsafe state
 is refused rather than silently chmodded or followed through links.
 
-`profile.json` is the sole configuration: `carddav-profile/1.0`, namespace,
-server URL, sorted collection allowlist, cadence 3600 seconds, and fixed
-capabilities (`read_only=true`, `create_update=false`, `cleanup_delete=false`).
-It never contains credentials. Repeated identical setup is a no-op; changed
-settings conflict. A single `profile.lock` serializes cooperating operations.
+`setup` refuses to write a fresh profile into a directory that has lost its
+`profile.json` but still holds retained private state — operations, receipts,
+generations, staging, runtime, or the `current` pointer. Such a directory is
+damaged rather than new, and rebinding it would silently re-aim already
+reviewed operations at whatever settings the new invocation carries.
+
+`profile.json` is the sole configuration: `carddav-profile/1.1`, namespace,
+server URL, sorted collection allowlist, and cadence 3600 seconds. It never
+contains credentials. Repeated identical setup is a no-op; changed settings
+conflict. A single `profile.lock` serializes cooperating operations.
+
+`carddav-profile/1.1` drops the `capabilities` block that `carddav-profile/1.0`
+copied into every profile: what the installed package can do is reported by
+`version --json`, not frozen into a file written once at setup time. A `1.0`
+profile is still accepted exactly as written — byte-for-byte, including its
+capability block — and is **never** rewritten in place; it is only normalized in
+memory to the current shape. An existing profile therefore keeps its
+identifiers and keeps the `profile_generation_sha256` its published generations
+are bound to, and a repeat `setup` with the same settings stays a silent no-op.
+Adding a `capabilities` block to a `1.1` profile is an unknown key and is
+refused, as is any other non-canonical byte.
 
 ## Runtime credentials
 
@@ -49,6 +65,15 @@ contain their values. The config is private; cleanup runs after the invocation,
 including on timeout or failure. Failure to remove it also fails the operation.
 A process crash or filesystem cleanup failure can leave a private temporary
 config behind; it still contains no credential values.
+
+## Credentials for writes
+
+`record`, the `prepare-*` commands, `apply`, and `reconcile` resolve
+credentials with exactly the same rule. They run the native record transport
+in-process rather than through the `vdirsyncer` subprocess, so the temporary
+config file above is not involved; nothing is persisted and nothing is echoed.
+The native libraries' loggers are silenced at import so a library warning can
+never land on the command surface's single fixed error line.
 
 ## Discovery and mirror sync
 
@@ -166,7 +191,7 @@ failure after it (for example the final directory fsync) still fails the
 command, but the newly referenced generation is never rolled back, so `current`
 never dangles. Only an uncatchable crash (SIGKILL, OOM, power loss) can leave an
 unreferenced staging or generation directory; readers only ever resolve
-`current`, and v0.1 does not prune.
+`current`, and this release does not prune.
 
 ## Freshness
 
@@ -181,7 +206,7 @@ consistency problem exists. A failed sync commits no pointer, so
 it leaves both the generation and `synced_at` exactly as they were.
 
 Local read commands derive one freshness object from `synced_at` and the
-profile's `sync_cadence_seconds` (fixed at `3600` in v0.1), using the same
+profile's `sync_cadence_seconds` (fixed at `3600`), using the same
 rule everywhere:
 
 | Key | Value |
@@ -199,9 +224,8 @@ freshness-bearing command (`status`, `search`, `show`, `snapshot`, `audit`)
 refuses it as unsafe profile state. `sync` tolerates it because it never reads
 pointer contents at all: after the mirror, index, and generation validate, it
 replaces `current` with a `carddav-current/1.1` pointer. One successful sync is
-therefore the whole migration. v0.1 is unreleased, so there is no other
-migration path, and a disposable test or development profile can simply be
-re-synced.
+therefore the whole migration, and a disposable test or development profile can
+simply be re-synced.
 
 ## Local read commands
 
@@ -209,7 +233,7 @@ re-synced.
 network, no subprocess, no credential variable is read, and nothing outside
 the selected profile is consulted. They work with the CardDAV server
 unreachable and with credentials absent or poisoned. Each takes `--profile
-NAME` and requires `--json`; there is no human-readable mode in v0.1. Each
+NAME` and requires `--json`; there is no human-readable mode. Each
 prints exactly one JSON object to stdout and exits 0, or prints nothing to
 stdout, one fixed line to stderr, and exits 2. There is no partial-success
 output: a payload is validated completely before its first byte is printed.
@@ -232,7 +256,12 @@ valid, not an error.
 requires a current generation and fails closed with
 `error: no current generation`.
 
-v0.1 never truncates and never paginates: `search` and `audit` return every
+Every read also reports `cache_invalidated`. It is `true` from the moment a
+remote write succeeds until the next successful `sync` republishes the
+generation, and it is present and Boolean even before the first sync. A reader
+that treats a local answer as current must check it as well as `freshness`.
+
+This release never truncates and never paginates: `search` and `audit` return every
 deterministic result, their totals count exactly what is returned, and
 `truncated` is always `false`. It is reserved so a later release can page
 without changing the envelope shape.
@@ -241,14 +270,15 @@ without changing the envelope shape.
 
 ```json
 {
-  "command_schema_version": "carddav-command/1.0",
+  "command_schema_version": "carddav-command/1.1",
   "command": "status",
   "profile": "demo",
   "current_generation": null,
   "profile_generation_sha256": "<64 lowercase hex>",
   "contact_count": null,
   "synced_at": null,
-  "freshness": null
+  "freshness": null,
+  "cache_invalidated": false
 }
 ```
 
@@ -266,7 +296,7 @@ three keys are `null` together.
 ### `snapshot --profile NAME --json`
 
 Prints the whole validated source payload inside the fixed
-`carddav-command/1.0` snapshot envelope specified in `data-model.md`: exactly
+`carddav-command/1.1` snapshot envelope specified in `data-model.md`: exactly
 `command_schema_version`, `command` (`snapshot`), `profile`, `generation`,
 `profile_generation_sha256`, `synced_at`, `freshness`, and `data`. `data` is
 the canonical `carddav-source/1.0` payload, and `generation` is its digest.
@@ -283,13 +313,14 @@ is read. A well-formed ID that is not in the current generation is
 
 ```json
 {
-  "command_schema_version": "carddav-command/1.0",
+  "command_schema_version": "carddav-command/1.1",
   "command": "show",
   "profile": "demo",
   "generation": "<64 lowercase hex>",
   "profile_generation_sha256": "<64 lowercase hex>",
   "synced_at": "<YYYY-MM-DDTHH:MM:SSZ>",
   "freshness": { "age_seconds": 0, "stale_after_seconds": 3600, "stale": false, "clock_skew": false },
+  "cache_invalidated": false,
   "contact": { "contact_id": "<16 lowercase hex>", "...": "the whole validated contact object" }
 }
 ```
@@ -320,13 +351,14 @@ searched.
 
 ```json
 {
-  "command_schema_version": "carddav-command/1.0",
+  "command_schema_version": "carddav-command/1.1",
   "command": "search",
   "profile": "demo",
   "generation": "<64 lowercase hex>",
   "profile_generation_sha256": "<64 lowercase hex>",
   "synced_at": "<YYYY-MM-DDTHH:MM:SSZ>",
   "freshness": { "age_seconds": 0, "stale_after_seconds": 3600, "stale": false, "clock_skew": false },
+  "cache_invalidated": false,
   "query": "<the query exactly as given>",
   "total_matches": 1,
   "truncated": false,
@@ -357,17 +389,18 @@ conservative reasons are:
 
 The `(unnamed contact)` placeholder display name is never name evidence, so
 contacts that merely lack a name are not reported as duplicates of each other.
-No other field (address, organization, birthday, URL) is evidence in v0.1.
+No other field (address, organization, birthday, URL) is evidence.
 
 ```json
 {
-  "command_schema_version": "carddav-command/1.0",
+  "command_schema_version": "carddav-command/1.1",
   "command": "audit",
   "profile": "demo",
   "generation": "<64 lowercase hex>",
   "profile_generation_sha256": "<64 lowercase hex>",
   "synced_at": "<YYYY-MM-DDTHH:MM:SSZ>",
   "freshness": { "age_seconds": 0, "stale_after_seconds": 3600, "stale": false, "clock_skew": false },
+  "cache_invalidated": false,
   "total_candidate_groups": 1,
   "truncated": false,
   "candidates": [
@@ -390,6 +423,63 @@ and groups are sorted by `(reason, key, member contact_ids)` with `reason`
 ordered `email`, `phone`, `name`. The same input always produces the same
 bytes.
 
+## Write commands
+
+Writes are two explicit steps: prepare an operation, then apply it by digest.
+Every write command takes `--profile NAME`, requires `--json`, prints exactly
+one JSON object, and accepts only the exact flag sequence below — no
+abbreviations, no reordering, no extra flags.
+
+| Command | Flags after `--profile NAME` |
+| --- | --- |
+| `record` | `--id ID --json` |
+| `prepare-create` | `--collection NAME --changes JSON --json` |
+| `prepare-update` | `--id ID --changes JSON --json` |
+| `prepare-delete` | `--id ID --json` |
+| `apply` | `--operation ID --json` |
+| `reconcile` | `--operation ID --json` |
+
+`--id` is the 16-hex `contact_id`; `--operation` is the 64-hex `operation_id`
+from a `prepare-*` result; `--collection` must be a member of the profile's own
+`collection_allowlist`. `--changes` is one `carddav-change/1.0` document as a
+single JSON argument, parsed with duplicate-key rejection. A target is always
+an exact identity — never a name, a pattern, a wildcard, or a remote URL. There
+is no bulk or multi-target form.
+
+`prepare-create` requires `--collection` explicitly, including when the profile
+selects only one collection, so a destination is always chosen rather than
+defaulted.
+
+Whole-card replacement (`prepare_replace`) is API-only, deliberately: it takes
+a complete vCard, and the command surface reads no file outside
+`$HERMES_HOME`.
+
+The documents these commands print — `carddav-operation/1.0`,
+`carddav-result/1.0`, `carddav-record/1.0` — are specified in
+`data-model.md` and validated by `schemas.validate_write_document`. The safety
+rules behind them (preconditions, verification, unknown outcomes,
+reconciliation, cache invalidation, private receipts) are in
+`write-safety.md`.
+
+### Private write state
+
+Inside the selected profile, alongside the read-side directories:
+
+- `operations/<operation_id>.json`: one reviewed operation, including the
+  complete before-image;
+- `receipts/<operation_id>.json`: one `carddav-receipt/1.0` outcome record;
+- `cache-invalid`: written before a mutation is dispatched and cleared only
+  when a sync has authoritatively republished the generation, so it is present
+  whenever a write may have outrun it — including while an outcome is unknown.
+
+Directories are `0700` and files `0600`, and both sets are bounded: the oldest
+entries beyond a fixed retention count are removed as new ones are written.
+
+Both documents are validated against their closed contracts every time they are
+loaded, and a receipt must additionally agree with the operation it claims to
+describe. Neither is treated as evidence on its own: a recorded success is
+re-proved against the server before it is reported (`write-safety.md`).
+
 ## Fixed failures
 
 Failures write one content-free stderr line and exit 2:
@@ -405,6 +495,17 @@ Failures write one content-free stderr line and exit 2:
 | `search`/`show`/`snapshot`/`audit` with no current generation | `error: no current generation` |
 | `show` with a well-formed contact ID that is not in the current generation | `error: contact not found` |
 | unexpected search/show/snapshot/audit failure | `error: search failed`, `error: show failed`, `error: snapshot failed`, `error: audit failed` |
+| malformed write flags, contact ID, operation ID, collection, or change document | `error: invalid operation` |
+| no prepared operation with that identifier | `error: operation not found` |
+| `record`/`prepare-*` target absent on the server | `error: contact not found` |
+| create precondition refused: something is already there | `error: already exists` |
+| update/delete precondition refused: the record changed since review | `error: revision conflict` |
+| the operation was reviewed against different profile settings than the current ones | `error: profile binding mismatch` |
+| the write was accepted but does not read back as intended, or reconciliation finds a record that is neither the reviewed nor the intended card | `error: verification failed` |
+| the outcome is unknown; run `reconcile` | `error: unknown outcome` |
+| applying an operation whose outcome is still unresolved | `error: reconciliation required` |
+| the server could not be reached or answered unusably; nothing was written | `error: remote unavailable` |
+| unexpected write failure | `error: <command> failed` |
 
 Setup retains its separate fixed error classes. No failure includes server
 response bodies, paths, contact contents, or credential values.
@@ -413,7 +514,19 @@ response bodies, paths, contact contents, or credential values.
 
 `uv run --group integration pytest -m integration -q` installs the optional
 `Radicale==3.5.8` test dependency and runs disposable localhost fixtures.
-Fixture provisioning happens before transport checks; during CLI operations the
-server records every method/path and rejects all methods except GET, HEAD,
-OPTIONS, PROPFIND, and REPORT. These tests never connect to a live address book.
-The default unit suite excludes tests marked `integration`.
+Fixture provisioning happens before transport checks. For the read-only
+transport tests the server records every method/path and rejects all methods
+except GET, HEAD, OPTIONS, PROPFIND, and REPORT, so `discover`/`sync` are proven
+never to attempt a mutation. The CRUD tests use a server that permits writes and
+assert that real `PUT`/`DELETE` requests happen, that a stale `If-Match` fails
+closed, and that local reads still open no socket afterwards. These tests never
+connect to a live address book. The default unit suite excludes tests marked
+`integration`.
+
+Localhost Radicale is a disposable test double, not evidence about any
+particular real server. Radicale 3.5.8 re-serializes every card it stores
+through vobject — which, among other things, collapses a multi-component
+`NICKNAME` on a plain `PUT`, before this skill is involved at all. Lossless
+editing is therefore proven at the pure level in `tests/test_vcards.py`, and
+read-back verification is what protects a real deployment from a server that
+normalizes a field this skill models.

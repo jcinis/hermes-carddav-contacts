@@ -109,7 +109,7 @@ def test_skill_frontmatter_is_honest_and_within_limits() -> None:
     assert len(fields["name"]) <= 60
     assert len(fields["description"]) <= 60
     assert fields["description"].endswith(".")
-    assert fields["version"] == "0.1.0"
+    assert fields["version"] == "0.2.0"
     assert fields["author"].split(",")[0].strip().startswith("jcinis")
     assert fields["license"] == "MIT"
     assert fields["platforms"] == "[linux, macos]"
@@ -123,11 +123,24 @@ def test_skill_documents_both_the_installed_and_source_invocations() -> None:
     assert "only Linux is verified" in text
 
 
-def test_documentation_declares_no_write_capability_and_external_runtime_state() -> None:
+def test_documentation_declares_the_write_boundary_and_external_runtime_state() -> None:
+    """Writes exist now, so the docs must say exactly where the boundary is."""
     for path in (SKILL_MD, REPO_ROOT / "README.md"):
         text = path.read_text()
         assert "$HERMES_HOME" in text
+        # Ordinary reads are still offline and routine sync is still read-only.
         assert "read-only" in text
+        for promised in ("prepare-create", "prepare-update", "prepare-delete", "apply"):
+            assert promised in text, f"{path.name}: {promised}"
+
+
+def test_the_public_api_module_is_declared_and_documented() -> None:
+    api_source = (REPO_ROOT / "hermes_carddav_contacts" / "api.py").read_text()
+    assert "import writes" in api_source
+    assert "__all__" in api_source
+    # The consumer-facing API must be named where a consumer will look for it.
+    for path in (SKILL_MD, REPO_ROOT / "README.md"):
+        assert "hermes_carddav_contacts import api" in path.read_text(), path.name
 
 
 def test_no_test_module_still_defers_its_subject_to_a_later_task() -> None:

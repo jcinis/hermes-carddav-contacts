@@ -9,7 +9,7 @@ import re
 from datetime import UTC, datetime
 from typing import NoReturn, cast
 
-_COMMAND_SCHEMA_VERSION = "carddav-command/1.0"
+_COMMAND_SCHEMA_VERSION = "carddav-command/1.1"
 _SOURCE_SCHEMA_VERSION = "carddav-source/1.0"
 _IDENTIFIER_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
 _CONTACT_ID_RE = re.compile(r"[0-9a-f]{16}\Z")
@@ -404,7 +404,7 @@ def _validate_version(data: object) -> None:
     string_values = {
         "command_schema_version": _COMMAND_SCHEMA_VERSION,
         "command": "version",
-        "package_version": "0.1.0",
+        "package_version": "0.2.0",
     }
     for key, expected in string_values.items():
         if type(value[key]) is not str or value[key] != expected:
@@ -415,8 +415,10 @@ def _validate_version(data: object) -> None:
         _raise(_INVALID_COMMAND)
 
     capabilities = _object(value["capabilities"], _INVALID_COMMAND)
-    _exact_keys(capabilities, ("read_only", "create_update", "cleanup_delete"), _INVALID_COMMAND)
-    expected_capabilities = {"read_only": True, "create_update": False, "cleanup_delete": False}
+    _exact_keys(capabilities, ("read_only", "create", "update", "delete"), _INVALID_COMMAND)
+    expected_capabilities = {
+        "read_only": False, "create": True, "update": True, "delete": True,
+    }
     for key, expected_bool in expected_capabilities.items():
         if type(capabilities[key]) is not bool or capabilities[key] is not expected_bool:
             _raise(_INVALID_COMMAND)
@@ -450,6 +452,7 @@ _READ_ENVELOPE_KEYS = (
     "profile_generation_sha256",
     "synced_at",
     "freshness",
+    "cache_invalidated",
 )
 _STATUS_KEYS = (
     "command_schema_version",
@@ -460,6 +463,7 @@ _STATUS_KEYS = (
     "contact_count",
     "synced_at",
     "freshness",
+    "cache_invalidated",
 )
 _CANDIDATE_KEYS = ("reason", "key", "members")
 _MEMBER_KEYS = ("contact_id", "values")
@@ -480,6 +484,12 @@ def _validate_freshness(data: object) -> None:
     for key in ("stale", "clock_skew"):
         if type(freshness[key]) is not bool:
             _raise(_INVALID_COMMAND)
+
+
+def _validate_cache_invalidated(value: object) -> None:
+    """A remote write has outrun the published generation until the next sync."""
+    if type(value) is not bool:
+        _raise(_INVALID_COMMAND)
 
 
 def _validate_profile_name(value: object) -> None:
@@ -504,6 +514,7 @@ def _read_envelope(data: object, command: str, extra: tuple[str, ...]) -> dict[s
     _validate_digest(value["profile_generation_sha256"])
     _validate_timestamp(value["synced_at"])
     _validate_freshness(value["freshness"])
+    _validate_cache_invalidated(value["cache_invalidated"])
     return value
 
 
@@ -532,6 +543,7 @@ def _validate_status(data: object) -> None:
         _raise(_INVALID_COMMAND)
     _validate_profile_name(value["profile"])
     _validate_digest(value["profile_generation_sha256"])
+    _validate_cache_invalidated(value["cache_invalidated"])
     derived = ("current_generation", "contact_count", "synced_at", "freshness")
     missing = [value[key] is None for key in derived]
     if any(missing) != all(missing):
@@ -615,6 +627,7 @@ def _validate_snapshot(data: object) -> None:
             "profile_generation_sha256",
             "synced_at",
             "freshness",
+            "cache_invalidated",
             "data",
         ),
         _INVALID_COMMAND,
@@ -630,6 +643,7 @@ def _validate_snapshot(data: object) -> None:
     _validate_timestamp(value["synced_at"])
 
     _validate_freshness(value["freshness"])
+    _validate_cache_invalidated(value["cache_invalidated"])
 
     source = value["data"]
     try:
@@ -660,3 +674,206 @@ def validate_command(data: object) -> None:
         _COMMAND_VALIDATORS[command](value)
     except ValueError:
         _raise(_INVALID_COMMAND)
+
+
+_OPERATION_SCHEMA_VERSION = "carddav-operation/1.0"
+_RESULT_SCHEMA_VERSION = "carddav-result/1.0"
+_RECORD_SCHEMA_VERSION = "carddav-record/1.0"
+_RECEIPT_SCHEMA_VERSION = "carddav-receipt/1.0"
+
+# Closed key sets for the write documents. `writes.py` builds and re-reads its
+# private state against these same tuples, so there is one definition of each
+# contract rather than a producer copy and a consumer copy.
+OPERATION_KEYS = (
+    "operation_schema_version",
+    "operation_id",
+    "operation",
+    "profile",
+    "account_namespace",
+    "collection_alias",
+    "contact_id",
+    "href",
+    "base_revision",
+    "before_vcard",
+    "after_vcard",
+    "before_contact",
+    "after_contact",
+    "profile_generation_sha256",
+    "prepared_at",
+)
+RECEIPT_KEYS = (
+    "receipt_schema_version",
+    "operation_id",
+    "operation",
+    "profile",
+    "collection_alias",
+    "contact_id",
+    "outcome",
+    "result_revision",
+    "attempted_at",
+    "completed_at",
+)
+RESULT_KEYS = (
+    "result_schema_version",
+    "operation_id",
+    "operation",
+    "profile",
+    "collection_alias",
+    "contact_id",
+    "outcome",
+    "remote_write",
+    "result_revision",
+    "verified",
+    "local_cache",
+    "generation",
+)
+RECORD_KEYS = (
+    "record_schema_version",
+    "profile",
+    "collection_alias",
+    "contact_id",
+    "revision",
+    "raw_vcard",
+    "contact",
+)
+WRITE_VERBS = ("create", "update", "replace", "delete")
+OUTCOMES = ("applied", "already_applied", "not_applied", "unknown")
+LOCAL_CACHE_STATES = ("refreshed", "stale")
+
+
+def _opaque_id(value: object) -> None:
+    if type(value) is not str or _CONTACT_ID_RE.fullmatch(value) is None:
+        _raise(_INVALID_COMMAND)
+
+
+def _revision(value: object) -> None:
+    """A revision is the server's own validator token, kept exactly as given."""
+    if type(value) is not str or not value:
+        _raise(_INVALID_COMMAND)
+
+
+def _vcard_text(value: object) -> None:
+    if type(value) is not str or not value.strip():
+        _raise(_INVALID_COMMAND)
+
+
+def _write_identity(value: dict[str, object]) -> None:
+    _validate_profile_name(value["profile"])
+    _identifier(value["collection_alias"])
+    _opaque_id(value["contact_id"])
+
+
+def _validate_operation(data: object) -> None:
+    value = _object(data, _INVALID_COMMAND)
+    _exact_keys(value, OPERATION_KEYS, _INVALID_COMMAND)
+    if value["operation_schema_version"] != _OPERATION_SCHEMA_VERSION:
+        _raise(_INVALID_COMMAND)
+    verb = value["operation"]
+    if type(verb) is not str or verb not in WRITE_VERBS:
+        _raise(_INVALID_COMMAND)
+    _validate_digest(value["operation_id"])
+    _validate_digest(value["profile_generation_sha256"])
+    _write_identity(value)
+    _identifier(value["account_namespace"])
+    _validate_timestamp(value["prepared_at"])
+
+    creating = verb == "create"
+    # A create has nothing to precede it; every other verb is bound to the
+    # exact record and the exact revision that were reviewed.
+    if creating:
+        if value["href"] is not None or value["base_revision"] is not None:
+            _raise(_INVALID_COMMAND)
+        if value["before_vcard"] is not None or value["before_contact"] is not None:
+            _raise(_INVALID_COMMAND)
+    else:
+        _nonempty_string(value["href"], _INVALID_COMMAND)
+        _revision(value["base_revision"])
+        _vcard_text(value["before_vcard"])
+        _contact_object(value["before_contact"])
+    # A delete proposes no new state; every other verb proposes exactly one card.
+    if verb == "delete":
+        if value["after_vcard"] is not None or value["after_contact"] is not None:
+            _raise(_INVALID_COMMAND)
+    else:
+        _vcard_text(value["after_vcard"])
+        _contact_object(value["after_contact"])
+
+
+def _validate_result(data: object) -> None:
+    value = _object(data, _INVALID_COMMAND)
+    _exact_keys(value, RESULT_KEYS, _INVALID_COMMAND)
+    if value["result_schema_version"] != _RESULT_SCHEMA_VERSION:
+        _raise(_INVALID_COMMAND)
+    if type(value["operation"]) is not str or value["operation"] not in WRITE_VERBS:
+        _raise(_INVALID_COMMAND)
+    if type(value["outcome"]) is not str or value["outcome"] not in OUTCOMES:
+        _raise(_INVALID_COMMAND)
+    if type(value["local_cache"]) is not str or value["local_cache"] not in LOCAL_CACHE_STATES:
+        _raise(_INVALID_COMMAND)
+    if type(value["remote_write"]) is not bool:
+        _raise(_INVALID_COMMAND)
+    # A reported result is only ever one this program verified by reading back.
+    if value["verified"] is not True:
+        _raise(_INVALID_COMMAND)
+    _validate_digest(value["operation_id"])
+    _write_identity(value)
+    if value["result_revision"] is not None:
+        _revision(value["result_revision"])
+    if value["generation"] is not None:
+        _validate_digest(value["generation"])
+
+
+def _validate_receipt(data: object) -> None:
+    """Validate one private receipt before any decision is made from it."""
+    value = _object(data, _INVALID_COMMAND)
+    _exact_keys(value, RECEIPT_KEYS, _INVALID_COMMAND)
+    if value["receipt_schema_version"] != _RECEIPT_SCHEMA_VERSION:
+        _raise(_INVALID_COMMAND)
+    if type(value["operation"]) is not str or value["operation"] not in WRITE_VERBS:
+        _raise(_INVALID_COMMAND)
+    outcome = value["outcome"]
+    if type(outcome) is not str or outcome not in OUTCOMES:
+        _raise(_INVALID_COMMAND)
+    _validate_digest(value["operation_id"])
+    _write_identity(value)
+    _validate_timestamp(value["attempted_at"])
+    if value["result_revision"] is not None:
+        _revision(value["result_revision"])
+    # An unresolved attempt has no completion time; a settled one always does.
+    if outcome == "unknown":
+        if value["completed_at"] is not None:
+            _raise(_INVALID_COMMAND)
+    else:
+        _validate_timestamp(value["completed_at"])
+
+
+def _validate_record(data: object) -> None:
+    value = _object(data, _INVALID_COMMAND)
+    _exact_keys(value, RECORD_KEYS, _INVALID_COMMAND)
+    if value["record_schema_version"] != _RECORD_SCHEMA_VERSION:
+        _raise(_INVALID_COMMAND)
+    _write_identity(value)
+    _revision(value["revision"])
+    _vcard_text(value["raw_vcard"])
+    _contact_object(value["contact"])
+
+
+_WRITE_VALIDATORS = {
+    "operation_schema_version": (_OPERATION_SCHEMA_VERSION, _validate_operation),
+    "result_schema_version": (_RESULT_SCHEMA_VERSION, _validate_result),
+    "record_schema_version": (_RECORD_SCHEMA_VERSION, _validate_record),
+    "receipt_schema_version": (_RECEIPT_SCHEMA_VERSION, _validate_receipt),
+}
+
+
+def validate_write_document(data: object) -> None:
+    """Validate one closed write document: operation, result, record, or receipt."""
+    value = _object(data, _INVALID_COMMAND)
+    for key, (version, validator) in _WRITE_VALIDATORS.items():
+        if value.get(key) == version:
+            try:
+                validator(value)
+            except ValueError:
+                _raise(_INVALID_COMMAND)
+            return
+    _raise(_INVALID_COMMAND)

@@ -1,4 +1,4 @@
-"""Exact `carddav-command/1.0` envelope shapes for the local read commands."""
+"""Exact `carddav-command/1.1` envelope shapes for the local read commands."""
 
 from __future__ import annotations
 
@@ -68,19 +68,20 @@ FRESHNESS: dict[str, object] = {
 
 def _envelope(command: str) -> dict[str, object]:
     return {
-        "command_schema_version": "carddav-command/1.0",
+        "command_schema_version": "carddav-command/1.1",
         "command": command,
         "profile": "demo",
         "generation": "a" * 64,
         "profile_generation_sha256": "b" * 64,
         "synced_at": "2026-09-10T00:00:00Z",
         "freshness": copy.deepcopy(FRESHNESS),
+        "cache_invalidated": False,
     }
 
 
 def _status(**overrides: object) -> dict[str, object]:
     payload = {
-        "command_schema_version": "carddav-command/1.0",
+        "command_schema_version": "carddav-command/1.1",
         "command": "status",
         "profile": "demo",
         "current_generation": "a" * 64,
@@ -88,6 +89,7 @@ def _status(**overrides: object) -> dict[str, object]:
         "contact_count": 2,
         "synced_at": "2026-09-10T00:00:00Z",
         "freshness": copy.deepcopy(FRESHNESS),
+        "cache_invalidated": False,
     }
     payload.update(overrides)
     return payload

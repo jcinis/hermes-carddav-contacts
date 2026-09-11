@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -31,9 +32,13 @@ ENVIRONMENT_KEYS = (
 def load(name: str) -> ModuleType:
     """Load one skill script as an isolated module."""
     path = ENTRYPOINT if name == "cli" else SCRIPTS / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(f"carddav_reads_{name}", path)
+    module_name = f"carddav_reads_{name}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    # Registered before execution so module-level `dataclass`/`NamedTuple`
+    # definitions can resolve their own module, exactly as a normal import does.
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 

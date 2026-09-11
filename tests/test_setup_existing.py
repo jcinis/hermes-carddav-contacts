@@ -47,7 +47,8 @@ def test_conflicting_setup_preserves_profile(tmp_path: Path, change: dict[str, o
 
 
 @pytest.mark.parametrize("damage", [
-    "malformed", "noncanonical", "unknown-key", "duplicate-key", "bad-types", "capabilities"
+    "malformed", "noncanonical", "unknown-key", "duplicate-key", "bad-types",
+    "legacy-capabilities",
 ])
 def test_corrupt_profile_is_refused_not_replaced(tmp_path: Path, damage: str) -> None:
     env, path = _created_profile(tmp_path)
@@ -65,7 +66,11 @@ def test_corrupt_profile_is_refused_not_replaced(tmp_path: Path, damage: str) ->
         elif damage == "bad-types":
             data["collection_allowlist"] = None
         else:
-            data["capabilities"]["read_only"] = 1
+            # The capability block belongs to carddav-profile/1.0 only; carrying
+            # it on a 1.1 profile is an unknown key, not a tolerated leftover.
+            data["capabilities"] = {
+                "read_only": True, "create_update": False, "cleanup_delete": False,
+            }
         raw = json.dumps(data, sort_keys=True, separators=(",", ":")).encode() + b"\n"
     path.write_bytes(raw)
     result = _run(_valid_setup_argv(), env)
@@ -152,7 +157,7 @@ def test_filesystem_error_is_fixed(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     def fail(*args: object, **kwargs: object) -> None:
         raise PermissionError("sensitive path must not reach stderr")
 
-    monkeypatch.setattr(module, "_write_profile_json", fail)
+    monkeypatch.setattr(module.profiles, "write_profile_json", fail)
     assert module.main(_valid_setup_argv()) == 2
     assert capsys.readouterr() == ("", "error: setup failed\n")
     assert not (tmp_path / "carddav-contacts/profiles/demo/profile.json").exists()

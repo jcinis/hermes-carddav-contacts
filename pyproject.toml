@@ -1,6 +1,6 @@
 [project]
 name = "hermes-carddav-contacts"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reusable, distributable CardDAV contacts skill for Hermes Agent skills"
 readme = "README.md"
 license = { text = "MIT" }
@@ -56,6 +56,9 @@ target-version = "py312"
 [tool.mypy]
 python_version = "3.12"
 strict = true
+# The shipped skill's scripts directory is not an importable package name, so
+# the same path the launcher and the API add at runtime is declared here.
+mypy_path = "skills/productivity/carddav-contacts/scripts"
 
 [tool.pytest.ini_options]
 addopts = "-m 'not integration and not packaging'"

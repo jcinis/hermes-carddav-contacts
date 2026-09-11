@@ -45,6 +45,9 @@ class _Recorder:
         self.app = app
         self.requests: list[tuple[str, str]] = []
         self.provisioning = False
+        # Off by default: every read-only check here proves the CLI never even
+        # attempts a remote mutation. Only the CRUD phase turns it on.
+        self.writes_allowed = False
         self.url = ""
         self.stop: Callable[[], None] = lambda: None
 
@@ -53,7 +56,7 @@ class _Recorder:
         method, path = environ["REQUEST_METHOD"], environ["PATH_INFO"]
         if not self.provisioning:
             self.requests.append((method, path))
-            if method not in ALLOWED_METHODS:
+            if method not in ALLOWED_METHODS and not self.writes_allowed:
                 start_response("405 Method Not Allowed", [("Content-Length", "0")])
                 return [b""]
         expected = "Basic " + base64.b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()
