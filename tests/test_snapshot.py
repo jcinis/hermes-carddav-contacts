@@ -115,3 +115,35 @@ def test_a_tampered_payload_is_refused_before_anything_is_printed(
     assert cli.main(["snapshot", "--profile", "demo", "--json"]) == 2
 
     assert capsys.readouterr() == ("", "error: unsafe profile state\n")
+
+
+def test_snapshot_carries_flattened_multi_valued_name_components(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cli: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile_dir = setup_profile(cli, tmp_path)
+    write_mirror(
+        profile_dir,
+        {"one.vcf": card("one", "Example One", "N:Doe;Jane;Q,R;Dr.,Prof.;Jr.")},
+    )
+    generation = publish(profile_dir)
+    monkeypatch.setattr(cli.reads.time, "time", lambda: SYNCED_AT_EPOCH)
+
+    assert cli.main(["snapshot", "--profile", "demo", "--json"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    load("schemas").validate_command(payload)
+    assert payload["generation"] == generation
+    assert payload["synced_at"] == SYNCED_AT
+    assert payload["data"]["contacts"][0]["name"] == {
+        "display": "Example One",
+        "prefix": "Dr., Prof.",
+        "given": "Jane",
+        "additional": "Q, R",
+        "family": "Doe",
+        "suffix": "Jr.",
+    }
