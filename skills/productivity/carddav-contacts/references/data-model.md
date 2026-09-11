@@ -164,7 +164,7 @@ contact:
 | vCard property | Contact field |
 | --- | --- |
 | `UID` | `contact_id` via `ids.contact_id` |
-| `FN` / `N` | `name.display` and the `prefix`/`given`/`additional`/`family`/`suffix` components |
+| `FN` / `N` | `name.display` and the `prefix`/`given`/`additional`/`family`/`suffix` components; a component carrying several comma-separated members is flattened into one string by joining the members with `, ` in vCard order, keeping repeats, empty members, and decoded escaping; a component whose members are all empty stays null |
 | `NICKNAME` | `aliases`, one alias per comma-separated component of every `NICKNAME` property |
 | `ORG` | `organizations`, one component list per property, inner order preserved |
 | `TITLE` | `titles` |

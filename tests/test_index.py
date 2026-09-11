@@ -312,3 +312,156 @@ def test_escaped_commas_stay_inside_one_nickname_value() -> None:
     )
 
     assert contact["aliases"] == ["Ex,tra", "Second"]
+
+
+def test_multi_valued_additional_name_component_is_flattened() -> None:
+    index = _load("index")
+
+    contact = index.parse_vcard(
+        _card("UID:example-uid", "FN:Example Person", "N:Doe;Jane;Q,R;Dr.;Jr."), "contacts-a"
+    )
+
+    assert contact["name"] == {
+        "display": "Example Person",
+        "prefix": "Dr.",
+        "given": "Jane",
+        "additional": "Q, R",
+        "family": "Doe",
+        "suffix": "Jr.",
+    }
+
+
+def test_every_structured_name_component_accepts_several_members() -> None:
+    index = _load("index")
+
+    contact = index.parse_vcard(
+        _card(
+            "UID:example-uid",
+            "FN:Example Person",
+            "N:Doe,Roe;Jane,Janet;Q,R;Dr.,Prof.;Jr.,III",
+        ),
+        "contacts-a",
+    )
+
+    assert contact["name"] == {
+        "display": "Example Person",
+        "prefix": "Dr., Prof.",
+        "given": "Jane, Janet",
+        "additional": "Q, R",
+        "family": "Doe, Roe",
+        "suffix": "Jr., III",
+    }
+
+
+def test_name_component_members_keep_order_repeats_empties_and_escaped_commas() -> None:
+    index = _load("index")
+
+    contact = index.parse_vcard(
+        _card("UID:example-uid", "FN:Example Person", "N:Doe;Jane;A\\,B,C,,C;;"), "contacts-a"
+    )
+
+    assert contact["name"]["additional"] == "A,B, C, , C"
+
+
+def test_display_falls_back_to_flattened_name_components_in_order() -> None:
+    index = _load("index")
+
+    contact = index.parse_vcard(
+        _card("UID:example-uid", "N:Doe;Jane,Janet;Q,R;Dr.,Prof.;Jr.,III"), "contacts-a"
+    )
+
+    assert contact["name"]["display"] == "Dr., Prof. Jane, Janet Q, R Doe Jr., III"
+
+
+def test_name_component_members_that_are_not_text_are_rejected() -> None:
+    index = _load("index")
+
+    for members in ([b"Q"], [None], [["Q"]], object()):
+        try:
+            index._name_component(members)
+        except index.InvalidContact:
+            continue
+        raise AssertionError("expected InvalidContact")
+
+
+def test_a_generation_refuses_control_characters_inside_a_name_component(
+    tmp_path: Path,
+) -> None:
+    index = _load("index")
+    mirror = _mirror(
+        tmp_path,
+        "contacts-a",
+        {"one.vcf": _card("UID:one", "FN:Example One", "N:Doe;Jane;Q\x01,R;;")},
+    )
+    source = index.build_source(mirror, _profile(["contacts-a"]))
+
+    assert source["contacts"][0]["name"]["additional"] == "Q\x01, R"
+    try:
+        index.write_index(tmp_path / "index.sqlite3", source, "a" * 64)
+    except ValueError as error:
+        assert str(error) == "invalid source"
+        return
+    raise AssertionError("expected invalid source")
+
+
+def test_all_empty_multi_valued_name_components_are_null() -> None:
+    index = _load("index")
+
+    contact = index.parse_vcard(
+        _card("UID:example-uid", "FN:Example Person", "N:,,;,,;,,;,,;,,"), "contacts-a"
+    )
+
+    assert contact["name"] == {
+        "display": "Example Person",
+        "prefix": None,
+        "given": None,
+        "additional": None,
+        "family": None,
+        "suffix": None,
+    }
+
+
+def test_an_all_empty_component_never_puts_punctuation_in_the_display_fallback() -> None:
+    index = _load("index")
+
+    contact = index.parse_vcard(_card("UID:example-uid", "N:Doe;Jane;,,;;"), "contacts-a")
+    empty = index.parse_vcard(_card("UID:other-uid", "N:,,;,,;,,;,,;,,"), "contacts-a")
+
+    assert contact["name"]["additional"] is None
+    assert contact["name"]["display"] == "Jane Doe"
+    assert empty["name"]["display"] == "(unnamed contact)"
+
+
+def test_empty_members_beside_text_are_still_preserved() -> None:
+    index = _load("index")
+
+    contact = index.parse_vcard(
+        _card("UID:example-uid", "FN:Example Person", "N:Doe;Jane;,Q,R;;"), "contacts-a"
+    )
+
+    assert contact["name"]["additional"] == ", Q, R"
+
+
+def test_whitespace_only_name_members_stay_text_like_scalar_components() -> None:
+    index = _load("index")
+
+    scalar = index.parse_vcard(
+        _card("UID:example-uid", "FN:Example Person", "N:Doe;Jane; ;;"), "contacts-a"
+    )
+    members = index.parse_vcard(
+        _card("UID:other-uid", "FN:Example Person", "N:Doe;Jane; , ;;"), "contacts-a"
+    )
+
+    assert scalar["name"]["additional"] == " "
+    assert members["name"]["additional"] == " ,  "
+
+
+def test_empty_members_mixed_with_non_text_members_are_rejected() -> None:
+    index = _load("index")
+
+    for members in (["", b"Q"], [None, ""], ["", ["Q"], ""]):
+        try:
+            index._name_component(members)
+        except index.InvalidContact:
+            continue
+        raise AssertionError("expected InvalidContact")

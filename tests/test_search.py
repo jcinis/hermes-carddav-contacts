@@ -290,3 +290,22 @@ def test_search_never_reads_another_profile(
     assert [
         result["name"]["display"] for result in json.loads(capsys.readouterr().out)["results"]
     ] == ["Beta Person"]
+
+
+@pytest.mark.parametrize("query", ["skłodowska", "curie", "q, r"])
+def test_search_matches_members_of_a_multi_valued_name_component(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cli: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+    query: str,
+) -> None:
+    profile_dir = setup_profile(cli, tmp_path)
+    write_mirror(
+        profile_dir,
+        {"one.vcf": card("one", "Marie Example", "N:Example;Marie;Skłodowska,Curie,Q,R;;")},
+    )
+    publish(profile_dir)
+    monkeypatch.setattr(cli.reads.time, "time", lambda: SYNCED_AT_EPOCH)
+
+    assert _displays(_search(cli, capsys, query)) == ["Marie Example"]

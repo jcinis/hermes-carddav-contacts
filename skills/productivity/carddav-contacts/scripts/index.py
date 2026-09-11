@@ -198,6 +198,32 @@ def _birthday(card: Any) -> dict[str, object] | None:
     return {"value": value, "kind": kind}
 
 
+_NAME_MEMBER_SEPARATOR = ", "
+
+
+def _name_component(raw: object) -> str:
+    """Flatten one structured `N` component into the source contract's string.
+
+    A vCard `N` component may carry several comma-separated members, which
+    vobject decodes as a list. The source schema stores each component as one
+    string or null, so members are joined with `", "` in their vCard order,
+    keeping repeats, empty members, and vobject's decoded escaping (an escaped
+    `\\,` is already one literal comma inside a member and is not a separator).
+    Members that are all empty carry no name text, so they flatten to the empty
+    component the caller stores as null rather than to separators alone.
+    Anything that is neither text nor a list of text is refused rather than
+    stringified.
+    """
+    if isinstance(raw, str):
+        return _text(raw)
+    if not isinstance(raw, list):
+        raise InvalidContact
+    members = [_text(member) for member in raw]
+    if not any(members):
+        return ""
+    return _NAME_MEMBER_SEPARATOR.join(members)
+
+
 def _name_components(card: Any) -> dict[str, str | None]:
     structured = getattr(card, "n", None)
     components: dict[str, str | None] = dict.fromkeys(_NAME_COMPONENTS)
@@ -205,7 +231,7 @@ def _name_components(card: Any) -> dict[str, str | None]:
         return components
     for component in _NAME_COMPONENTS:
         raw = getattr(structured.value, component, "")
-        text = _text(raw)
+        text = _name_component(raw)
         components[component] = text or None
     return components
 
