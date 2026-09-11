@@ -8,6 +8,7 @@ methods; a local edit to the working mirror is reverted by the next sync, never
 uploaded.
 
 This file exists so the read-only boundary is stated where a reader looks for
-write behavior. It defines no future contract: any approval-gated write
-capability or cleanup deletion ABI will be designed by its own plan, and until
-then nothing here is scheduled or promised.
+write behavior. The `create_update` and `cleanup_delete` capability flags are
+part of the reported capability contract so a consumer can check them; both are
+false, and this file defines no future contract for either. Nothing here is
+scheduled or promised.

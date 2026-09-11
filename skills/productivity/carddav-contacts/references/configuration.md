@@ -342,8 +342,7 @@ searched.
 
 Reports **duplicate candidates only**. It makes no identity decision, picks no
 survivor, merges nothing, writes nothing, and never rewrites the index. A
-group is evidence that a human or a separate cleanup project should look, and
-nothing more.
+group is evidence that a human should look, and nothing more.
 
 A candidate group is a single shared normalized key held by two or more
 distinct contacts. Groups are never merged transitively: two groups that share

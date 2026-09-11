@@ -16,10 +16,8 @@ metadata:
 Read-only discovery and working-mirror synchronization for a standards-compliant
 CardDAV address book via `vdirsyncer`, with `vobject` parsing into an immutable,
 indexed local generation, plus network-free `status`, `search`, `show`,
-`snapshot`, and `audit` queries over that generation.
-This skill does not own Markdown rendering, contact-to-person identity links,
-or duplicate-merge decisions — see the repository root `README.md`/`CLAUDE.md`
-for the full ownership boundary.
+`snapshot`, and `audit` queries over that generation. It is read-only: it never
+writes to the remote address book, and it makes no merge or identity decisions.
 
 ## Status
 
@@ -39,8 +37,8 @@ behind an atomic `current` pointer that also records the successful sync time.
 `status`, `search`, `show`, `snapshot`, and `audit` read that generation
 locally — no network, no subprocess, no credentials — and each requires
 `--json`. `version` alone, no arguments, and any other invocation exit
-non-zero. Approval-gated writes and the cleanup-only deletion ABI remain
-unimplemented.
+non-zero. No command in this release creates, updates, merges, or deletes a
+contact.
 
 ## When to Use
 
@@ -48,13 +46,12 @@ unimplemented.
   `search` by a literal substring, then `show` the full record by its opaque ID.
 - Check how current the local copy is (`status`), export the whole validated
   payload for a downstream consumer (`snapshot`), or list conservative
-  duplicate candidates for a human or a separate cleanup project (`audit`).
+  duplicate candidates for a human to review (`audit`).
 - Refresh the local copy: `discover` once, then `sync` (the only commands that
   need credentials or reach the server).
-- Never intended for: arbitrary WebDAV file storage, projection/rendering
-  into a notes tool, or duplicate-contact merge decisions — those belong to
-  other repositories in the three-repository system described in
-  `README.md`.
+- Never intended for: arbitrary WebDAV file storage, rendering contacts into
+  another tool's format, or making duplicate-contact merge decisions. A
+  consumer builds those on the versioned `snapshot` payload.
 
 ## Installation and invocation
 
@@ -167,6 +164,7 @@ exact envelopes, freshness rule, and error table.
 - `audit` reports duplicate *candidates* only — shared email, phone digits, or
   display name. It never merges, never picks a survivor, and never writes.
   Groups are not merged transitively, so one contact can appear in several.
+  Reviewing a group is a human's call, not this skill's.
 - A generation published before this release carries no sync time; every read
   refuses it until one more successful `sync` refreshes the pointer.
 - A remote contact without a usable `UID`, or two contacts sharing one
@@ -180,7 +178,7 @@ exact envelopes, freshness rule, and error table.
 - Keep both native sync passes: vdirsyncer 0.21.0 reverts a local edit on the
   following pass, not the first. Wrapper success requires both to finish.
 - The transport uses POSIX locking and `/usr/bin/printenv`: Linux/macOS only.
-- Do not add projection/rendering or duplicate-decision logic here; see the
+- Do not add rendering/projection or duplicate-decision logic here; see the
   non-goals list in `CLAUDE.md`.
 
 ## Verification
