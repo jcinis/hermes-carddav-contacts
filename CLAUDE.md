@@ -1,20 +1,21 @@
 # CLAUDE.md — hermes-carddav-contacts
 
-Project-specific guidance for working in this repository. This repository is
-the **reusable, generic CardDAV capability** in a three-repository system —
-see `README.md` for the full ownership boundary. Keep that boundary intact:
-do not add projection/rendering/identity-link logic (owned by a downstream
-notes repository) or duplicate-decision/survivor/cleanup logic (owned by a
-separate cleanup project) here.
+Project-specific guidance for working in this repository. This is a
+standalone, distributable CardDAV contacts skill: it owns CardDAV
+discovery/sync, vCard validation, stable contact IDs, the local SQLite index,
+and a local-only read command surface. Keep it generic and independently
+useful — it must stay usable by any consumer, with no assumptions about who
+installs it or what they do with the data.
 
 ## Non-goals (do not implement here)
 
 - Custom HTTP/DAV/XML client or custom vCard parsing — use `vdirsyncer` and
   `vobject`.
-- Markdown/note-taking-tool rendering, git-carried human projections, or
-  contact-to-person identity links.
-- Duplicate-contact ledgers, survivor policy, or merge/delete approval
-  batching.
+- Rendering or projection of contact data into another tool's format, and any
+  contact-to-person identity linking. Consumers build that on the versioned
+  `snapshot` payload.
+- Duplicate-contact decision ledgers, survivor policy, or merge approval
+  batching. `audit` reports candidates only and never decides.
 - A routine, user-facing delete command.
 - Any deployment-specific default: no hardcoded server hostnames,
   address-book/collection names, filesystem paths outside `$HERMES_HOME`,
