@@ -347,7 +347,7 @@ def test_status_reports_a_null_generation_before_the_first_sync(
         tmp_path / "carddav-contacts" / "profiles" / "demo" / "profile.json"
     ).read_bytes()
     assert json.loads(captured.out) == {
-        "command_schema_version": "carddav-command/1.0",
+        "command_schema_version": "carddav-command/1.1",
         "command": "status",
         "profile": "demo",
         "current_generation": None,
@@ -357,6 +357,7 @@ def test_status_reports_a_null_generation_before_the_first_sync(
         "contact_count": None,
         "synced_at": None,
         "freshness": None,
+        "cache_invalidated": False,
     }
 
 

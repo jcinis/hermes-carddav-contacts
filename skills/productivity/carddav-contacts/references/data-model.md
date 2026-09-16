@@ -1,11 +1,14 @@
-# Data model — read-only v0.1
+# Data model — v0.2
 
 `ids.py` owns identities, `schemas.py` owns JSON validation and source
 serialization, and `queries.py` owns the pure search and duplicate-candidate
 functions; all three are pure and touch neither files nor the network.
 `index.py` adapts mirrored vCards into those contracts and reads and writes the
 SQLite index, and `reads.py` turns a published generation back into a validated
-source payload for the local read commands.
+source payload for the local read commands. `vcards.py` owns the pure
+`carddav-change/1.0` change document and the lossless card editor, `records.py`
+owns record-level transport, `writes.py` orchestrates reviewed mutations, and
+`profiles.py` owns the profile store shared by the CLI and the public API.
 Use synthetic contacts only in examples and tests.
 
 ## Identity
@@ -29,8 +32,9 @@ Frozen examples: `example-uid` → `b687b2e8ceca7c40`, `EXAMPLE-UID` →
 ## Source payload: `carddav-source/1.0`
 
 All object shapes below are closed: every listed key is required, including
-empty/null values; unknown keys are rejected recursively. This v0.1 producer
+empty/null values; unknown keys are rejected recursively. This producer
 validator accepts exactly `carddav-source/1.0`, not speculative newer versions.
+The payload is unchanged from v0.1: adding CRUD did not change it.
 Downstream compatibility policy belongs to the downstream consumer.
 
 Root keys:
@@ -103,7 +107,13 @@ bytes. It covers the entire source payload, not timestamps, profile display
 name, paths, ETags, runtime versions, or envelope metadata. Equivalent array
 order and line endings yield the same digest; changed contact data does not.
 
-## Command envelopes: `carddav-command/1.0`
+## Command envelopes: `carddav-command/1.1`
+
+`carddav-command/1.1` differs from `1.0` in exactly two ways: every read
+envelope carries one new key, `cache_invalidated`, and the `capabilities`
+object reports the real CRUD capability set. The `data` payload of a snapshot
+is unchanged `carddav-source/1.0`, so an existing snapshot consumer keeps
+working on the payload it already parses.
 
 `validate_command(data)` supports exactly the `version`, `status`, `snapshot`,
 `show`, `search`, and `audit` shapes below. Unknown commands, versions, or keys
@@ -111,23 +121,27 @@ fail, recursively and at every depth. Setup has no JSON envelope, and
 `discover`/`sync` print nothing on success.
 
 **Version:** exactly `command_schema_version`, `command` (`version`),
-`package_version` (`0.1.0`), `supported_source_schema_versions`
+`package_version` (`0.2.0`), `supported_source_schema_versions`
 (`["carddav-source/1.0"]`), `capabilities`, `dependency_versions`.
-Capabilities are exactly `read_only: true`, `create_update: false`,
-`cleanup_delete: false` (actual Booleans). Dependencies are exactly
+Capabilities are exactly `read_only: false`, `create: true`, `update: true`,
+`delete: true` (actual Booleans). Dependencies are exactly
 `vdirsyncer: "0.21.0"`, `vobject: "0.9.9"`.
 
 **Snapshot:** exactly `command_schema_version`, `command` (`snapshot`),
 `profile` (identifier), `generation` (source digest), `profile_generation_sha256`
 (64 lowercase hex characters), `synced_at` (valid UTC whole-second timestamp
-`YYYY-MM-DDTHH:MM:SSZ`), `freshness`, `data` (validated source payload).
+`YYYY-MM-DDTHH:MM:SSZ`), `freshness`, `cache_invalidated` (Boolean), `data`
+(validated source payload).
 Validation checks `generation` against `data`. Freshness has exactly
 `age_seconds` (nonnegative integer), `stale_after_seconds` (positive integer),
 `stale` and `clock_skew` (Booleans). Integers never accept Booleans.
 
 **Local read envelope:** `status`, `show`, `search`, and `audit` share
 `command_schema_version`, `command`, `profile`, `profile_generation_sha256`,
-plus a sync time and freshness. `show`/`search`/`audit` add `generation` and
+`cache_invalidated`, plus a sync time and freshness. `cache_invalidated` is an
+actual Boolean and is `true` from the moment a remote write succeeds until the
+next successful `sync` republishes the generation; it is never null, including
+before the first sync. `show`/`search`/`audit` add `generation` and
 non-null `synced_at`/`freshness`; `status` instead carries `current_generation`,
 `contact_count`, `synced_at`, and `freshness`, which are either all null (no
 generation yet) or all present. Command-specific keys are exactly:
@@ -221,3 +235,82 @@ and recomputes the canonical source digest, which must equal the generation. Gen
 nonfinite numbers before schema validation. Never feed a last-key-wins parse
 into validation or hashing. Public pure validators raise content-free
 `ValueError`s; CLI commands are responsible for their fixed stderr/exit mapping.
+
+## Write documents
+
+Four more closed contracts describe mutations. `validate_write_document(data)`
+accepts an operation, a result, or a record and dispatches on its own
+`*_schema_version` key; every key is required and unknown keys are refused at
+every depth, exactly as for read envelopes. `schemas.py` owns the key tuples
+and `writes.py` builds its private state against those same tuples, so there is
+one definition of each contract rather than a producer copy and a consumer copy.
+
+### `carddav-change/1.0` — what to change
+
+Exactly `change_schema_version`, `set`, `clear`, `replace`. Omitted means
+unchanged; a document that changes nothing is refused, and no field may appear
+in more than one of the three.
+
+| Key | Value |
+| --- | --- |
+| `set` | object mapping scalar fields to non-empty strings |
+| `clear` | array of unique field names to remove |
+| `replace` | object mapping multi-valued fields to a whole new list |
+
+Scalar fields are `display`, `prefix`, `given`, `additional`, `family`,
+`suffix`, `birthday`. Multi-valued fields are `aliases`, `organizations`,
+`titles`, `emails`, `phones`, `urls`, `addresses`, `notes`. `replace` values
+use the same shapes `carddav-source/1.0` defines and are validated against that
+contract, so there is no second contact vocabulary.
+
+`replace` rewrites a whole field at once — that is the only multi-valued edit,
+and it is deliberate: read the current entries first, then pass exactly the
+entries you want, with their own types and preferences. Nothing is inferred:
+no country, no date parsing, no preferred endpoint, no identity.
+
+Refusals: clearing `display` (a vCard must carry a formatted name, and
+`name.display` is derived from it) and any non-null `label` on a typed value or
+address (the reader never reads a vCard `LABEL` back into the contract, so
+writing one would be invisible data).
+
+### `carddav-operation/1.0` — one reviewed, bound mutation
+
+Exactly `operation_schema_version`, `operation_id`, `operation`, `profile`,
+`account_namespace`, `collection_alias`, `contact_id`, `href`, `base_revision`,
+`before_vcard`, `after_vcard`, `before_contact`, `after_contact`,
+`profile_generation_sha256`, `prepared_at`.
+
+`operation` is one of `create`, `update`, `replace`, `delete`. `operation_id`
+is the lowercase SHA-256 of the canonical bytes of the whole document with
+`operation_id` itself excluded, so the identifier *is* the binding: a changed
+target, revision, or proposed card is a different operation.
+
+A `create` carries no `href`, no `base_revision`, and no before-state; every
+other verb carries all three. A `delete` carries no after-state; every other
+verb carries exactly one proposed card. `base_revision` is the server's own
+validator token (`ETag`), stored exactly as received and never normalized.
+
+### `carddav-result/1.0` — what happened
+
+Exactly `result_schema_version`, `operation_id`, `operation`, `profile`,
+`collection_alias`, `contact_id`, `outcome`, `remote_write`, `result_revision`,
+`verified`, `local_cache`, `generation`.
+
+`outcome` is one of `applied`, `already_applied`, `not_applied`, `unknown`.
+`remote_write` is `true` only when this call itself wrote. `verified` is always
+`true`: a result is only ever reported for a write this program read back.
+`local_cache` is `refreshed` or `stale` — remote success and local refresh are
+separate facts and are reported separately.
+
+### `carddav-record/1.0` — one fresh remote record
+
+Exactly `record_schema_version`, `profile`, `collection_alias`, `contact_id`,
+`revision`, `raw_vcard`, `contact`. `raw_vcard` is the record exactly as the
+server returned it and is the only thing an edit is ever applied to;
+`contact` is the same normalized projection the snapshot uses, for review only.
+**Never rebuild a writable card from `contact`** — the projection is lossy by
+design.
+
+`carddav-receipt/1.0` is the private, on-disk counterpart recording an
+attempt's outcome under the profile state root. It is not printed by any
+command and is not part of the public surface.

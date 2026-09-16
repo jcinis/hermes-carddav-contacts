@@ -1,7 +1,7 @@
 ---
 name: carddav-contacts
-description: Read-only CardDAV mirror and local contact queries.
-version: 0.1.0
+description: CardDAV contact mirror, local queries, and basic CRUD.
+version: 0.2.0
 author: jcinis (V), Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -16,8 +16,10 @@ metadata:
 Read-only discovery and working-mirror synchronization for a standards-compliant
 CardDAV address book via `vdirsyncer`, with `vobject` parsing into an immutable,
 indexed local generation, plus network-free `status`, `search`, `show`,
-`snapshot`, and `audit` queries over that generation. It is read-only: it never
-writes to the remote address book, and it makes no merge or identity decisions.
+`snapshot`, and `audit` queries over that generation — and basic CRUD: create,
+read, update, and delete one explicitly identified contact through a reviewed,
+revision-bound operation. Ordinary reads stay offline, routine sync stays
+read-only, and the skill still makes no merge or identity decisions.
 
 ## Status
 
@@ -36,9 +38,18 @@ SQLite index in private staging, and publishes it as an immutable generation
 behind an atomic `current` pointer that also records the successful sync time.
 `status`, `search`, `show`, `snapshot`, and `audit` read that generation
 locally — no network, no subprocess, no credentials — and each requires
-`--json`. `version` alone, no arguments, and any other invocation exit
-non-zero. No command in this release creates, updates, merges, or deletes a
-contact.
+`--json`. `version` alone, no arguments, and unsupported invocations exit
+non-zero.
+
+`record` reads one contact fresh from the server. `prepare-create`,
+`prepare-update`, and `prepare-delete` each read the target fresh and write one
+private, reviewable operation bound to an exact record and the revision it
+carried; `apply --operation ID` performs exactly that one write with a
+conditional precondition and verifies it by reading the record back;
+`reconcile --operation ID` resolves an operation whose outcome is unknown. The
+same operations are importable from `hermes_carddav_contacts.api`. No read,
+no `sync`, and no `audit` mutates anything. This skill still makes no merge,
+survivor, or identity decision.
 
 ## When to Use
 
@@ -47,11 +58,14 @@ contact.
 - Check how current the local copy is (`status`), export the whole validated
   payload for a downstream consumer (`snapshot`), or list conservative
   duplicate candidates for a human to review (`audit`).
-- Refresh the local copy: `discover` once, then `sync` (the only commands that
-  need credentials or reach the server).
+- Refresh the local copy: `discover` once, then `sync`.
+- Add, correct, or remove one specific contact: read it fresh with `record`,
+  `prepare-*` the change, show the operation to whoever is deciding, then
+  `apply` it.
 - Never intended for: arbitrary WebDAV file storage, rendering contacts into
   another tool's format, or making duplicate-contact merge decisions. A
-  consumer builds those on the versioned `snapshot` payload.
+  consumer builds those on the versioned `snapshot` payload and on
+  `hermes_carddav_contacts.api`.
 
 ## Installation and invocation
 
@@ -63,9 +77,25 @@ equally supported; every later example shows the installed form.
 checkout, no `PYTHONPATH`, and no particular working directory:
 
 ```python
-terminal(command="uv pip install hermes_carddav_contacts-0.1.0-py3-none-any.whl")
+terminal(command="uv tool install --python 3.12 /absolute/path/to/hermes_carddav_contacts-0.2.0-py3-none-any.whl")
 terminal(command="hermes-carddav-contacts version --json")
 ```
+
+The wheel path is a placeholder for a supplied artifact, not a claim that a
+release or PyPI package exists. The repository README documents source
+installation. Use an isolated tool environment, not Hermes's own Python
+environment. Confirm the command is on the agent terminal's `PATH` and reports
+v0.2.0 with create/update/delete capabilities before proceeding.
+
+The executable and Hermes skill are separate installation steps. Copy the
+**complete** `skills/productivity/carddav-contacts/` directory from the same
+source revision into the intended Hermes profile's
+`$HERMES_HOME/skills/productivity/carddav-contacts/`. Preserve an existing
+`HERMES_HOME`; use `~/.hermes` only for the default profile. Do not overwrite
+an existing skill without reviewing it. Retain `scripts/` and `references/`
+alongside `SKILL.md`. Open a new conversation in that profile and confirm the
+agent can load this skill and invoke the installed command. Manual skill copies
+and the executable must be updated together; no auto-update is configured here.
 
 **From a source checkout.** Run the entry-point script directly from the
 repository root:
@@ -83,6 +113,20 @@ skill invokes it, and it is never required at runtime.
 
 ## Prerequisites and local setup
 
+For a new owner, ask for the credential-free HTTPS CardDAV server URL and the
+exact address-book collection identifier from their provider/administrator,
+not its display label. There is no interactive address-book picker. Ask for a
+local profile name and stable namespace; this CardDAV profile is distinct from
+the Hermes profile that owns `HERMES_HOME`. Do not guess or normalize a provider
+identifier that fails the supported syntax below.
+
+Have the owner supply the credential pair through their secret manager or the
+selected Hermes process's protected credential environment, never in chat,
+command arguments, URLs, or this skill's files. The CLI does not load `.env`;
+variables must reach the process executing it. Exports in another shell do not
+update a running gateway. Do not print values to diagnose credential delivery,
+and obtain permission before restarting an agent process to refresh its environment.
+
 All runtime state lives under `$HERMES_HOME/carddav-contacts/`, outside any
 checkout and outside the installed package. Create a profile first:
 
@@ -95,16 +139,22 @@ collections, and lowercase identifiers matching `[a-z0-9][a-z0-9._-]{0,63}`.
 State lives under `$HERMES_HOME/carddav-contacts/profiles/<profile>/`, or
 `~/.hermes/carddav-contacts/profiles/<profile>/` when unset. Setup success is
 silent; failure returns exit 2 and one fixed error line. Profiles cannot be
-updated in v0.1. Never put credentials in the server URL.
+updated. Never put credentials in the server URL. A profile written by v0.1
+(`carddav-profile/1.0`) keeps working untouched and is never rewritten in
+place.
 
-For discovery/sync, export a complete non-empty `CARDDAV_USERNAME` and
+For network operations, export a complete non-empty `CARDDAV_USERNAME` and
 `CARDDAV_PASSWORD` pair from the operator's secret manager. A complete DAV pair
 is a compatibility fallback only if neither CARDDAV variable is set. Partial
 pairs fail; credentials never go in arguments or persisted config. See
 `references/configuration.md` for the complete precedence and failure contract.
 
-`discover` and `sync` are the only commands that open a network connection or
-read a credential. They talk to the configured server read-only and never write
+The same single pair authenticates reads and all CRUD operations. Full-access
+credentials are sufficient for everything; read-only credentials let the server
+deny writes. Never ask for a second write-specific credential pair. Confirming
+a prepared change is authorization for that operation, not another login.
+
+`discover` and `sync` talk to the configured server read-only and never write
 to the remote address book:
 
 ```python
@@ -114,6 +164,12 @@ terminal(command="hermes-carddav-contacts sync --profile demo")
 
 Run discovery explicitly before the first sync. Exact collection names are
 required; missing remote collections fail rather than being created.
+
+Finish onboarding with `status --profile NAME --json`, a search for a contact
+the owner expects, and `show` using an actual returned ID after disambiguation.
+Check exit codes and freshness; stop on failure. Do not create a test contact
+in the owner's book as part of setup. No scheduler is installed: routine sync
+is read-only and on demand. The mirror is a cache, not a backup.
 
 ## Reading contacts locally
 
@@ -128,6 +184,10 @@ terminal(command="hermes-carddav-contacts snapshot --profile demo --json")
 terminal(command="hermes-carddav-contacts audit --profile demo --json")
 ```
 
+Each also reports `cache_invalidated`: `true` means a remote write succeeded
+but the local generation has not been refreshed yet, so the answer may be out
+of date. Run `sync` to clear it.
+
 `--query` is a literal case-insensitive substring, never a pattern: `%`, `_`,
 `*`, and quotes match themselves. `--id` is the 16-hex `contact_id` from a
 search or snapshot result; a well-formed but absent ID is `error: contact not
@@ -135,6 +195,51 @@ found`. `status`, `search`, `show`, `snapshot`, and `audit` report `synced_at`
 and a `freshness` object measuring time since the last successful sync against
 the profile's 3600-second cadence. See `references/configuration.md` for the
 exact envelopes, freshness rule, and error table.
+
+## Changing contacts
+
+Writes need credentials, exactly like `discover`/`sync`. Every change is
+prepared first, reviewed, then applied by its own digest:
+
+Installation is not blanket write consent. Read an update/delete target fresh;
+for creation confirm the collection and new fields (there is no before-image).
+Show the prepared operation and obtain approval for that specific change before
+`apply`. The program enforces revision checks; the agent/operator enforces human
+approval. Inspect the resulting verification status, not only the process exit
+code. Unknown outcomes require `reconcile`; do not blindly retry a write.
+
+```python
+terminal(command="hermes-carddav-contacts record --profile demo --id 0123456789abcdef --json")
+terminal(command="""hermes-carddav-contacts prepare-create --profile demo --collection contacts --changes '{"change_schema_version":"carddav-change/1.0","set":{"display":"Example Person"},"clear":[],"replace":{"emails":[{"value":"person@example.invalid","types":["work"],"label":null,"preference":null}]}}' --json""")
+terminal(command="hermes-carddav-contacts apply --profile demo --operation <operation_id> --json")
+terminal(command="""hermes-carddav-contacts prepare-update --profile demo --id 0123456789abcdef --changes '{"change_schema_version":"carddav-change/1.0","set":{"display":"Example Person"},"clear":["birthday"],"replace":{}}' --json""")
+terminal(command="hermes-carddav-contacts prepare-delete --profile demo --id 0123456789abcdef --json")
+terminal(command="hermes-carddav-contacts reconcile --profile demo --operation <operation_id> --json")
+```
+
+A change document names only what changes: `set` for scalar fields
+(`display`, `prefix`, `given`, `additional`, `family`, `suffix`, `birthday`),
+`clear` to remove a field, and `replace` to rewrite one whole multi-valued
+field (`aliases`, `organizations`, `titles`, `emails`, `phones`, `urls`,
+`addresses`, `notes`). Anything omitted is unchanged. Read the current entries
+with `record` first, then supply the whole field — replacing keeps whatever
+types, preferences, and values you pass and nothing else.
+
+The same operations are importable, which is how a consumer should build on
+this rather than becoming a second CardDAV writer:
+
+```python
+from hermes_carddav_contacts import api
+
+operation = api.prepare_update("demo", "0123456789abcdef", changes)
+result = api.apply_operation("demo", operation["operation_id"])
+```
+
+`api` also exposes `read_record`, `read_collection`, and `prepare_replace`, a
+validated lossless whole-card replacement for a consumer that composed the
+complete card itself. See `references/write-safety.md` for preconditions,
+verification, unknown outcomes, and cache invalidation, and
+`references/configuration.md` for the exact grammar and error table.
 
 ## Access and permissions
 
@@ -144,16 +249,23 @@ exact envelopes, freshness rule, and error table.
   invoking user; the `$HERMES_HOME` root above them is operator-owned and keeps
   its own mode, checked only for type and owner. No command reads or writes
   another profile, the installed package, or any source checkout.
-- **Network.** Only `discover` and `sync`, only to the profile's configured
-  `server_url`, and only with read-only DAV methods. Every other command is
-  offline.
+- **Network.** Only `discover`, `sync`, `record`, the `prepare-*` commands,
+  `apply`, and `reconcile`, and only to a collection the profile's configured
+  `server_url` itself advertised, named by the profile's own
+  `collection_allowlist`. `discover` and `sync` use read-only DAV methods; a
+  write happens only inside `apply` or `reconcile`, for exactly one prepared
+  operation. `status`, `search`, `show`, `snapshot`, and `audit` are offline.
+  A caller can never supply a remote URL.
 - **Credentials.** Read at operation time from the environment only: a complete
   `CARDDAV_USERNAME` + `CARDDAV_PASSWORD` pair, else a complete
   `DAV_USERNAME` + `DAV_PASSWORD` pair when neither `CARDDAV_*` variable is
   set. A partial pair fails closed. Nothing is persisted, logged, or echoed.
-- **No writes.** `capabilities` is fixed at `read_only=true`,
-  `create_update=false`, `cleanup_delete=false`. There is no create, update,
-  merge, or delete command in this release — say so rather than attempting one.
+- **Writes.** `capabilities` reports `read_only=false`, `create=true`,
+  `update=true`, `delete=true`. Every write is a separately prepared and
+  applied operation bound to one exact contact and one exact revision, with a
+  no-overwrite or `If-Match` precondition and a read-back check. There is still
+  no merge command and no bulk or wildcard operation — say so rather than
+  improvising one.
 
 ## Pitfalls
 
@@ -174,7 +286,22 @@ exact envelopes, freshness rule, and error table.
   comma-separated lists; `\,` stays a literal comma in one alias.
 - The working mirror is mutable derivative state, not a snapshot. A failed
   sync can leave it partial; never present it as a complete contact directory.
-- Remote storage is always read-only. Local edits are reverted, not uploaded.
+- The sync storage is always read-only: editing a mirror file changes nothing
+  remotely and is reverted on the next sync. Writes go through `prepare-*` and
+  `apply`, never through the mirror.
+- A `revision conflict` means the record changed between review and
+  application. Prepare the change again and look at the current record; never
+  loop on apply.
+- An `unknown outcome` is neither a success nor a failure. Run `reconcile`
+  before doing anything else — retrying the write blindly can duplicate a
+  contact or delete one that was just recreated.
+- After a successful write the local cache is refreshed; if that refresh fails
+  the write still happened and every read reports `cache_invalidated: true`.
+  Deleting the last contact in a collection always lands in this state, because
+  pinned vdirsyncer refuses to sync a newly emptied storage.
+- A server that re-serializes what it stores can normalize a card no matter
+  what a client sends. Read-back verification reports such a loss for any field
+  this skill models rather than claiming success.
 - Keep both native sync passes: vdirsyncer 0.21.0 reverts a local edit on the
   following pass, not the first. Wrapper success requires both to finish.
 - The transport uses POSIX locking and `/usr/bin/printenv`: Linux/macOS only.
@@ -183,8 +310,8 @@ exact envelopes, freshness rule, and error table.
 
 ## Verification
 
-Verification covers metadata, local setup, read-only transport, and refusal
-of unsupported invocations:
+Verification covers metadata, local setup, read-only transport, conditional
+writes, and refusal of unsupported invocations:
 
 - This file's YAML frontmatter parses and satisfies the skill-authoring
   contract (`name`/`description`/`version`/`author`/`license`/`platforms`/
@@ -194,8 +321,10 @@ of unsupported invocations:
   real wheel and sdist, installs the wheel into a fresh virtualenv outside
   the checkout, and drives the installed `hermes-carddav-contacts` command
   through `version`, `setup`, read-only `discover`/`sync` against a
-  disposable localhost Radicale recorder, and every local query with that
-  server already shut down.
+  disposable localhost Radicale recorder, a full create/update/delete cycle
+  through both the installed console command and the installed
+  `hermes_carddav_contacts.api`, and every local query with that server
+  already shut down.
 - `scripts/carddav_contacts.py version --json` prints one JSON object and
   exits 0 with no stderr; `version` alone, no arguments, and every other
   unimplemented command exit non-zero with no traceback.
@@ -208,6 +337,14 @@ of unsupported invocations:
 - Index and generation tests cover vCard parsing, the SQLite index, immutable
   publication, pointer swaps, profile-binding refusal, `status` before any
   generation, and staging cleanup with a retained `current` on failure.
+- Write tests cover the change-document contract, lossless preservation of
+  untouched properties (photos, unknown extensions, multi-valued structured
+  names), preview/revision binding, stale preconditions, duplicate-apply
+  refusal, unknown-outcome reconciliation, failed-refresh stale-cache
+  reporting, and the fixed content-free error lines.
 - `uv run --group integration pytest -m integration -q` exercises real
-  vdirsyncer against disposable localhost Radicale, records HTTP methods, and
-  refuses all remote mutation methods during CLI operations.
+  vdirsyncer against disposable localhost Radicale: read-only `discover`/`sync`
+  with every remote mutation method refused, and real conditional
+  create/update/delete with stale `If-Match` preconditions failing closed.
+  Localhost Radicale is not evidence of any particular real server's
+  behaviour.

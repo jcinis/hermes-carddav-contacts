@@ -214,6 +214,7 @@ def test_audit_reports_candidates_only_and_writes_nothing(
         "profile_generation_sha256",
         "synced_at",
         "freshness",
+        "cache_invalidated",
         "total_candidate_groups",
         "truncated",
         "candidates",

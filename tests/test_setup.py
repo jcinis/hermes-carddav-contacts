@@ -140,16 +140,11 @@ def test_setup_creates_profile_from_repeated_collection_flags(tmp_path: Path) ->
     assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
 
     expected_profile: dict[str, object] = {
-        "profile_schema_version": "carddav-profile/1.0",
+        "profile_schema_version": "carddav-profile/1.1",
         "account_namespace": "example",
         "server_url": "https://example.test/dav/",
         "collection_allowlist": ["contacts-a", "contacts-b"],
         "sync_cadence_seconds": 3600,
-        "capabilities": {
-            "read_only": True,
-            "create_update": False,
-            "cleanup_delete": False,
-        },
     }
     expected_bytes = (
         json.dumps(expected_profile, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -498,7 +493,7 @@ def test_write_profile_json_removes_tempfile_on_replace_failure(
     monkeypatch.setattr(module.os, "replace", _boom)
 
     with pytest.raises(OSError, match="simulated os.replace failure"):
-        module._write_profile_json(path, {"a": 1})
+        module.profiles.write_profile_json(path, {"a": 1})
 
     assert not path.exists()
     assert list(tmp_path.glob(".profile.*.tmp")) == []

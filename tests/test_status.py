@@ -62,13 +62,14 @@ def test_status_reports_the_validated_index_and_freshness(
     assert captured.err == ""
     load("schemas").validate_command(json.loads(captured.out))
     assert json.loads(captured.out) == {
-        "command_schema_version": "carddav-command/1.0",
+        "command_schema_version": "carddav-command/1.1",
         "command": "status",
         "profile": "demo",
         "current_generation": generation,
         "profile_generation_sha256": profile_hash,
         "contact_count": 1,
         "synced_at": SYNCED_AT,
+        "cache_invalidated": False,
         "freshness": {
             "age_seconds": 60,
             "stale_after_seconds": 3600,

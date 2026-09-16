@@ -40,10 +40,11 @@ def test_identity_source_and_envelope_roundtrip() -> None:
     assert ids["contact_ref"]("example", opaque_id) == "carddav:example:b687b2e8ceca7c40"
 
     envelope = {
-        "command_schema_version": "carddav-command/1.0", "command": "snapshot",
+        "command_schema_version": "carddav-command/1.1", "command": "snapshot",
         "profile": "demo", "generation": generation,
         "profile_generation_sha256": "a" * 64,
         "synced_at": "2026-01-01T00:00:00Z",
+        "cache_invalidated": False,
         "freshness": {"age_seconds": 0, "stale_after_seconds": 3600,
                       "stale": False, "clock_skew": False},
         "data": parsed,
