@@ -38,7 +38,7 @@ SQLite index in private staging, and publishes it as an immutable generation
 behind an atomic `current` pointer that also records the successful sync time.
 `status`, `search`, `show`, `snapshot`, and `audit` read that generation
 locally — no network, no subprocess, no credentials — and each requires
-`--json`. `version` alone, no arguments, and any other invocation exit
+`--json`. `version` alone, no arguments, and unsupported invocations exit
 non-zero.
 
 `record` reads one contact fresh from the server. `prepare-create`,
@@ -77,9 +77,25 @@ equally supported; every later example shows the installed form.
 checkout, no `PYTHONPATH`, and no particular working directory:
 
 ```python
-terminal(command="uv pip install hermes_carddav_contacts-0.2.0-py3-none-any.whl")
+terminal(command="uv tool install --python 3.12 /absolute/path/to/hermes_carddav_contacts-0.2.0-py3-none-any.whl")
 terminal(command="hermes-carddav-contacts version --json")
 ```
+
+The wheel path is a placeholder for a supplied artifact, not a claim that a
+release or PyPI package exists. The repository README documents source
+installation. Use an isolated tool environment, not Hermes's own Python
+environment. Confirm the command is on the agent terminal's `PATH` and reports
+v0.2.0 with create/update/delete capabilities before proceeding.
+
+The executable and Hermes skill are separate installation steps. Copy the
+**complete** `skills/productivity/carddav-contacts/` directory from the same
+source revision into the intended Hermes profile's
+`$HERMES_HOME/skills/productivity/carddav-contacts/`. Preserve an existing
+`HERMES_HOME`; use `~/.hermes` only for the default profile. Do not overwrite
+an existing skill without reviewing it. Retain `scripts/` and `references/`
+alongside `SKILL.md`. Open a new conversation in that profile and confirm the
+agent can load this skill and invoke the installed command. Manual skill copies
+and the executable must be updated together; no auto-update is configured here.
 
 **From a source checkout.** Run the entry-point script directly from the
 repository root:
@@ -97,6 +113,20 @@ skill invokes it, and it is never required at runtime.
 
 ## Prerequisites and local setup
 
+For a new owner, ask for the credential-free HTTPS CardDAV server URL and the
+exact address-book collection identifier from their provider/administrator,
+not its display label. There is no interactive address-book picker. Ask for a
+local profile name and stable namespace; this CardDAV profile is distinct from
+the Hermes profile that owns `HERMES_HOME`. Do not guess or normalize a provider
+identifier that fails the supported syntax below.
+
+Have the owner supply the credential pair through their secret manager or the
+selected Hermes process's protected credential environment, never in chat,
+command arguments, URLs, or this skill's files. The CLI does not load `.env`;
+variables must reach the process executing it. Exports in another shell do not
+update a running gateway. Do not print values to diagnose credential delivery,
+and obtain permission before restarting an agent process to refresh its environment.
+
 All runtime state lives under `$HERMES_HOME/carddav-contacts/`, outside any
 checkout and outside the installed package. Create a profile first:
 
@@ -113,11 +143,16 @@ updated. Never put credentials in the server URL. A profile written by v0.1
 (`carddav-profile/1.0`) keeps working untouched and is never rewritten in
 place.
 
-For discovery/sync, export a complete non-empty `CARDDAV_USERNAME` and
+For network operations, export a complete non-empty `CARDDAV_USERNAME` and
 `CARDDAV_PASSWORD` pair from the operator's secret manager. A complete DAV pair
 is a compatibility fallback only if neither CARDDAV variable is set. Partial
 pairs fail; credentials never go in arguments or persisted config. See
 `references/configuration.md` for the complete precedence and failure contract.
+
+The same single pair authenticates reads and all CRUD operations. Full-access
+credentials are sufficient for everything; read-only credentials let the server
+deny writes. Never ask for a second write-specific credential pair. Confirming
+a prepared change is authorization for that operation, not another login.
 
 `discover` and `sync` talk to the configured server read-only and never write
 to the remote address book:
@@ -129,6 +164,12 @@ terminal(command="hermes-carddav-contacts sync --profile demo")
 
 Run discovery explicitly before the first sync. Exact collection names are
 required; missing remote collections fail rather than being created.
+
+Finish onboarding with `status --profile NAME --json`, a search for a contact
+the owner expects, and `show` using an actual returned ID after disambiguation.
+Check exit codes and freshness; stop on failure. Do not create a test contact
+in the owner's book as part of setup. No scheduler is installed: routine sync
+is read-only and on demand. The mirror is a cache, not a backup.
 
 ## Reading contacts locally
 
@@ -159,6 +200,13 @@ exact envelopes, freshness rule, and error table.
 
 Writes need credentials, exactly like `discover`/`sync`. Every change is
 prepared first, reviewed, then applied by its own digest:
+
+Installation is not blanket write consent. Read an update/delete target fresh;
+for creation confirm the collection and new fields (there is no before-image).
+Show the prepared operation and obtain approval for that specific change before
+`apply`. The program enforces revision checks; the agent/operator enforces human
+approval. Inspect the resulting verification status, not only the process exit
+code. Unknown outcomes require `reconcile`; do not blindly retry a write.
 
 ```python
 terminal(command="hermes-carddav-contacts record --profile demo --id 0123456789abcdef --json")

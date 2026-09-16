@@ -90,6 +90,7 @@ SDIST_TOP_LEVEL = {"PKG-INFO", ".gitignore", "LICENSE", "README.md", "pyproject.
 UPSTREAM_HOSTS = {
     "vdirsyncer.pimutils.org", "eventable.github.io", "docs.astral.sh",
     "github.com", "opensource.org", "pypi.org", "files.pythonhosted.org",
+    "hermes-agent.nousresearch.com",
 }
 RESERVED_MARKERS = (".invalid", ".test", ".example", "localhost",
                     "127.0.0.1", "::1", "2001:db8:")
