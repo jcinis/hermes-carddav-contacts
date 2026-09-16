@@ -88,7 +88,7 @@ SDIST_TOP_LEVEL = {"PKG-INFO", ".gitignore", "LICENSE", "README.md", "pyproject.
 # RFC 6761/2606/3849 reserved names, the loopback interface, or the upstream
 # project/index hosts this repository documents and locks against.
 UPSTREAM_HOSTS = {
-    "vdirsyncer.pimutils.org", "eventable.github.io", "docs.astral.sh",
+    "vdirsyncer.pimutils.org", "py-vobject.github.io", "docs.astral.sh",
     "github.com", "opensource.org", "pypi.org", "files.pythonhosted.org",
     "hermes-agent.nousresearch.com",
 }
