@@ -4,7 +4,7 @@ A distributable, self-contained Hermes Agent skill for a standards-compliant
 CardDAV address book: offline local queries over a synchronized mirror, plus
 basic CRUD on individual contacts. It wraps
 [`vdirsyncer`](https://vdirsyncer.pimutils.org/) for CardDAV synchronization
-and [`vobject`](https://eventable.github.io/vobject/) for vCard parsing, and
+and [`vobject`](https://py-vobject.github.io/) for vCard parsing, and
 adds a private local SQLite index, stable opaque contact IDs, a small
 local-only read surface (`status`, `search`, `show`, `snapshot`, `audit`), and
 a reviewed, revision-bound write surface (`record`, `prepare-create`,
