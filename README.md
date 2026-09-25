@@ -1,5 +1,69 @@
 # hermes-carddav-contacts
 
+## TL;DR
+
+**Ask Hermes for a person's phone number, email, or address from your own
+CardDAV address book.** Once the command and skill are installed and your
+address book is synced, use ordinary conversation instead of CLI commands:
+
+> What's Alex Morgan's phone number?
+>
+> Find Jamie Chen's work email.
+>
+> What's the mailing address I have saved for Sam Rivera?
+
+- **Local-first lookup:** searches read a private local mirror, without
+  contacting the CardDAV server. Hermes turns the results into an answer.
+- **Explicit changes:** you can also ask Hermes to add, update, or delete one
+  contact. It prepares the change for your review before applying it, checks
+  the server revision, and verifies the result. Routine sync never uploads edits.
+- **Bring your own CardDAV account:** this is a standalone CLI plus a Hermes
+  skill, not a hosted contact service or a connector to every phone's contacts.
+- **Early-adopter scope:** Python 3.12+, tested on Linux with disposable Radicale.
+  macOS and other providers are not yet verified. No automatic refresh scheduler
+  is installed, and there is no bulk merge command.
+
+Start with [Set up with your Hermes](#set-up-with-your-hermes).
+The executable **and** the skill are both required; installing just one is not
+complete setup. No Memex or separate contact-cleanup project is needed.
+
+### Once connected, just ask
+
+You don't need to remember command names or contact IDs. Hermes uses the skill
+to search, asks you to choose when a name is ambiguous, and retrieves the saved
+details. It should report a missing field rather than invent one.
+
+| Ask Hermes | What should happen |
+| --- | --- |
+| "What's Alex Morgan's phone number?" | Search the local copy, resolve the right person, and return their saved number(s). |
+| "Find Jamie Chen's work email." | Retrieve the saved email addresses and their labels; don't guess which is work if it isn't recorded. |
+| "Refresh my contacts, then look up Sam Rivera." | Run a read-only sync before the lookup. |
+| "Change Alex Morgan's work phone to +1-202-555-0142." | Read the exact contact fresh, show the proposed change, and wait for approval before writing. |
+
+These names and the number are fictional examples, not bundled contacts.
+Requests to send a message or place a call need a separate tool; this skill
+only looks up and manages contacts. Search itself is literal substring search,
+not semantic search—Hermes translates your request into the lookup steps.
+If Hermes doesn't select the skill, ask it to load `carddav-contacts` explicitly.
+
+**Freshness:** ordinary lookups use the last successful sync. Hermes should
+check the reported freshness and warn or refresh when the cache is stale or
+invalidated. "Local-first" does not mean "always up to date."
+
+**Privacy:** local files have private permissions, but this package does not
+encrypt them. Contact details returned to Hermes can enter the conversation
+and be sent to your configured model provider. Offline CLI lookup does **not**
+mean the whole AI conversation stays on your machine. Use an appropriate Hermes
+model, host, and conversation-retention policy for your address book. Back up
+your address book separately before trying writes; the mirror is not a backup.
+The current CLI takes edit payloads in `--changes` arguments, which can also
+appear in process listings, shell history, and agent/tool logs. It does not yet
+support reading a change document from stdin or a private file. The Python API
+avoids that argument exposure when called in-process, but does not control
+logging by its caller.
+
+## How it works
+
 A distributable, self-contained Hermes Agent skill for a standards-compliant
 CardDAV address book: offline local queries over a synchronized mirror, plus
 basic CRUD on individual contacts. It wraps
@@ -122,13 +186,14 @@ needed. The local mirror and search index are included; scheduled refresh is not
 
 ### 1. Install the executable and the skill
 
-**Source installation:** install the v0.2.0 CRUD implementation from `main`.
-This path does not require a GitHub release or PyPI publication; do not assume
-a `v0.2.0` tag or an indexed package exists. Use a new checkout, inspect the
-source, and record its commit before installation:
+**Source installation:** install the tagged `v0.2.0` CRUD implementation rather
+than a moving development branch. This tag points to commit
+`cf5320b32e9da682f154adfcce58ae3288aaea1a`. No PyPI package or GitHub release
+asset is required. Use a new checkout, inspect the source, and verify its commit
+before installation:
 
 ```sh
-git clone --branch main https://github.com/jcinis/hermes-carddav-contacts.git
+git clone --branch v0.2.0 https://github.com/jcinis/hermes-carddav-contacts.git
 cd hermes-carddav-contacts
 git rev-parse HEAD
 uv tool install --python 3.12 .
@@ -186,6 +251,11 @@ Have the owner identify:
   The local CardDAV profile is separate from the Hermes profile chosen above.
 - Credentials with the intended access: read permission for sync/search and write
   permission for CRUD. Use a provider-issued app password where required.
+
+Use **HTTPS for every remote server**. The current CLI also accepts `http://`
+URLs (used by the disposable localhost tests); it does not enforce encryption.
+Plain HTTP can expose credentials and contact data in transit. Do not use it
+for a remote address book.
 
 Use **one credential pair for all operations**. Full-access credentials enable
 reads and CRUD; read-only credentials restrict access at the server. There is

@@ -196,6 +196,43 @@ and a `freshness` object measuring time since the last successful sync against
 the profile's 3600-second cadence. See `references/configuration.md` for the
 exact envelopes, freshness rule, and error table.
 
+### Conversational person lookup
+
+When the user asks for a person's details, such as "Joshua's number":
+
+1. Search for the person's name, not the whole sentence, and check the returned
+   freshness and cache-invalidation state. Warn about stale results or refresh
+   before presenting them as current.
+2. Inspect the matches: search covers more than names, so a mention in another
+   contact's notes is not evidence that the contact is the requested person.
+   Do not choose the first result or infer identity from a shared name alone.
+3. If several people plausibly match and the conversation has not already
+   identified one unambiguously, ask **which person** before returning their
+   requested details. List the candidates by full saved name and, when needed,
+   a minimal saved distinguishing detail such as organization. Do not dump
+   complete records, private notes, or everyone's phone numbers just to ask.
+   Keep each choice bound to its actual returned `contact_id`.
+4. After the user chooses, run `show` with that returned ID and answer the
+   original request. If one person was already unambiguous, no clarification
+   is needed. Return saved values with their labels; if several numbers exist,
+   list their labels or ask which is wanted. Never invent a number, a missing
+   label, or a preferred number. Say plainly when the requested field is absent.
+5. If there is no clear match, say so and ask for a surname or other identifying
+   detail, or try a broader literal search. Nicknames are not automatically
+   equivalent: "Joshua" need not match a record saved only as "Josh". Treat a
+   broader or alternate-name result as a candidate, not a confirmed identity.
+
+For example, with fictional search results:
+
+> I found several Joshuas. Which one do you mean?
+> 1. Joshua Morgan — Example Company
+> 2. Joshua Chen — Example Studio
+> 3. Joshua Rivera
+
+This clarification is handled by Hermes using the returned records; the CLI
+returns JSON matches and does not itself conduct a conversation. A choice here
+identifies a lookup target, not authorization to edit or delete that contact.
+
 ## Changing contacts
 
 Writes need credentials, exactly like `discover`/`sync`. Every change is
@@ -306,7 +343,7 @@ verification, unknown outcomes, and cache invalidation, and
   following pass, not the first. Wrapper success requires both to finish.
 - The transport uses POSIX locking and `/usr/bin/printenv`: Linux/macOS only.
 - Do not add rendering/projection or duplicate-decision logic here; see the
-  non-goals list in `CLAUDE.md`.
+  non-goals list in the repository's `AGENTS.md`.
 
 ## Verification
 
