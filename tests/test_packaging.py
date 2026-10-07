@@ -110,7 +110,7 @@ def test_skill_frontmatter_is_honest_and_within_limits() -> None:
     assert len(fields["description"]) <= 60
     assert fields["description"].endswith(".")
     assert fields["version"] == "0.2.0"
-    assert fields["author"].split(",")[0].strip().startswith("jcinis")
+    assert fields["author"].split(",")[0].strip().startswith("vexlin")
     assert fields["license"] == "MIT"
     assert fields["platforms"] == "[linux, macos]"
 
