@@ -193,7 +193,7 @@ asset is required. Use a new checkout, inspect the source, and verify its commit
 before installation:
 
 ```sh
-git clone --branch v0.2.0 https://github.com/jcinis/hermes-carddav-contacts.git
+git clone --branch v0.2.0 https://github.com/vexlin/hermes-carddav-contacts.git
 cd hermes-carddav-contacts
 git rev-parse HEAD
 uv tool install --python 3.12 .

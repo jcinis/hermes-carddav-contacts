@@ -2,7 +2,7 @@
 name: carddav-contacts
 description: CardDAV contact mirror, local queries, and basic CRUD.
 version: 0.2.0
-author: jcinis (V), Hermes Agent
+author: vexlin (V), Hermes Agent
 license: MIT
 platforms: [linux, macos]
 metadata:
